@@ -1,0 +1,274 @@
+import { readdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+import process from "node:process";
+
+interface Sponsor {
+  name: string | null;
+  login: string;
+  avatar: string;
+  amount: number;
+  createdAt: string;
+  tierTitle: string;
+  tierTitlePlural: string;
+  tierLevel: number;
+  /** Extra rel tokens for the sponsor's link (e.g. `sponsored`); may be empty. */
+  rel: string;
+  link: string;
+  /** Tagline, present on sponsors that bought an ad slot. */
+  description?: string;
+  /** 1-based ad-grid position the sponsor bought. */
+  slot?: number;
+}
+
+const SPONSORS_SOURCE_URL =
+  "https://raw.githubusercontent.com/middleapi/static/refs/heads/main/sponsors.json";
+const PAST_SPONSORS_URL =
+  "https://htmlpreview.github.io/?https://github.com/middleapi/static/blob/main/sponsors.svg";
+const ROOT_DIR = process.cwd();
+const README_FILE_NAME = "README.md";
+
+const SKIP_DIRS = new Set([
+  "node_modules",
+  ".git",
+  "dist",
+  ".output",
+  ".next",
+  ".nuxt",
+  ".turbo",
+]);
+
+const findReadmes = async (dir: string): Promise<string[]> => {
+  const entries = await readdir(dir, { withFileTypes: true });
+  const result: string[] = [];
+  const subdirPromises: Promise<string[]>[] = [];
+
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+
+    if (entry.isDirectory()) {
+      if (SKIP_DIRS.has(entry.name)) {
+        continue;
+      }
+
+      subdirPromises.push(findReadmes(fullPath));
+    } else if (entry.isFile() && entry.name === README_FILE_NAME) {
+      result.push(fullPath);
+    }
+  }
+
+  const subResults = await Promise.all(subdirPromises);
+  return [...result, ...subResults.flat()];
+};
+
+/** `noopener` always, plus whatever extra tokens the data carries. */
+const relAttribute = (sponsor: Sponsor): string =>
+  ["noopener", sponsor.rel].filter(Boolean).join(" ");
+
+const escapeHtml = (value: string): string =>
+  value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+
+const getTierImageSizeAndColumns = (
+  tierLevel: number,
+  tierLevels: number[]
+): [columns: number, imageSize: number] => {
+  const rank = tierLevels.indexOf(tierLevel);
+
+  const columnByRank = [3, 4, 5, 6, 7, 8];
+  const column = columnByRank[Math.min(rank, columnByRank.length - 1)] ?? 3;
+  return [column, Math.floor(838 / column)];
+};
+
+/**
+ * The slot sponsors' cards — logo on the left, name over tagline on the
+ * right. One card per row. The oversized cell width is a preferred width,
+ * not a minimum: GitHub caps tables at the container, so the card spans the
+ * full row on any screen and the text wraps on phones instead of scrolling.
+ * One cell per card, the logo floated with the deprecated-but-sanitizer-safe
+ * `align`/`hspace` attributes, so no table border cuts through the card.
+ */
+const buildSlotCards = (slotSponsors: Sponsor[]): string[] => {
+  const lines = ["<table>"];
+
+  for (const sponsor of slotSponsors) {
+    const name = escapeHtml(sponsor.name ?? sponsor.login);
+    const description = escapeHtml(sponsor.description ?? "");
+
+    lines.push(
+      "  <tr>",
+      `   <td width="2000"><a href="${escapeHtml(sponsor.link)}" target="_blank" rel="${relAttribute(sponsor)}" title="${description}"><img src="${escapeHtml(sponsor.avatar)}" width="64" align="left" hspace="12" alt="${name}"/><b>${name}</b></a><br /><sub>${description}</sub></td>`,
+      "  </tr>"
+    );
+  }
+
+  lines.push("</table>", "");
+
+  return lines;
+};
+
+const buildSponsorsSection = (sponsors: Sponsor[]): string => {
+  const activeSponsors = sponsors.filter(
+    (sponsor) => sponsor.tierLevel > 0 && sponsor.amount > 0
+  );
+  const pastSponsors = sponsors.filter(
+    (sponsor) => sponsor.tierLevel <= 0 || sponsor.amount <= 0
+  );
+
+  // Slot sponsors are featured as cards up top; the tier tables below carry
+  // everyone else so nobody appears twice.
+  const slotSponsors = activeSponsors
+    .filter((sponsor) => sponsor.slot !== undefined)
+    .toSorted((a, b) => (a.slot ?? 0) - (b.slot ?? 0));
+  const tieredSponsors = activeSponsors.filter(
+    (sponsor) => sponsor.slot === undefined
+  );
+
+  const groupedSponsors = new Map<number, Sponsor[]>();
+
+  for (const sponsor of tieredSponsors) {
+    const group = groupedSponsors.get(sponsor.tierLevel);
+
+    if (group) {
+      group.push(sponsor);
+      continue;
+    }
+
+    groupedSponsors.set(sponsor.tierLevel, [sponsor]);
+  }
+
+  const lines = [
+    "## Sponsors",
+    "",
+    "Like what we build over at [middleapi](https://github.com/middleapi)? You can help keep it going through [GitHub Sponsors](https://github.com/sponsors/dinwwwh) or [Open Collective](https://opencollective.com/middleapi). Every bit helps! 🚀",
+    "",
+  ];
+
+  if (slotSponsors.length > 0) {
+    lines.push(...buildSlotCards(slotSponsors));
+  }
+
+  // Sizes rank against every active tier, slot sponsors' tiers included, so
+  // featuring the top tiers as cards does not inflate the tables below them.
+  const sizeTierLevels = [
+    ...new Set(activeSponsors.map((sponsor) => sponsor.tierLevel)),
+  ].toSorted((a, b) => b - a);
+  const tierLevels = [...groupedSponsors.keys()].toSorted((a, b) => b - a);
+
+  for (const tierLevel of tierLevels) {
+    const tierSponsors = groupedSponsors.get(tierLevel);
+
+    if (!tierSponsors || tierSponsors.length === 0) {
+      continue;
+    }
+
+    const tierTitle = tierSponsors[0]?.tierTitlePlural ?? `Tier ${tierLevel}`;
+    const [columns, imageSize] = getTierImageSizeAndColumns(
+      tierLevel,
+      sizeTierLevels
+    );
+
+    lines.push(`### ${tierTitle}`, "", "<table>", "  <tr>");
+
+    for (const [index, sponsor] of tierSponsors.entries()) {
+      const href = sponsor.link;
+      const displayName = sponsor.name ?? sponsor.login;
+      const escapedName = escapeHtml(displayName);
+
+      lines.push(
+        `   <td align="center"><a href="${escapeHtml(href)}" target="_blank" rel="${relAttribute(sponsor)}" title="${escapedName}"><img src="${escapeHtml(sponsor.avatar)}" width="${imageSize}" alt="${escapedName}"/><br />${escapedName}</a></td>`
+      );
+
+      const isRowEnd = (index + 1) % columns === 0;
+      const isLast = index === tierSponsors.length - 1;
+
+      if (isRowEnd && !isLast) {
+        lines.push("  </tr>", "  <tr>");
+      }
+    }
+
+    lines.push("  </tr>", "</table>", "");
+  }
+
+  if (pastSponsors.length > 0) {
+    const noun = pastSponsors.length === 1 ? "past sponsor" : "past sponsors";
+
+    lines.push(
+      `With thanks to [${pastSponsors.length} ${noun}](${PAST_SPONSORS_URL}) who helped get Oasty here.`,
+      ""
+    );
+  }
+
+  return `${lines.join("\n")}\n`;
+};
+
+const replaceSponsorsSection = (
+  content: string,
+  replacement: string
+): string => {
+  const heading = "## Sponsors";
+  const startIndex = content.indexOf(heading);
+
+  if (startIndex === -1) {
+    return content;
+  }
+
+  const nextHeadingIndex = content.indexOf(
+    "\n## ",
+    startIndex + heading.length
+  );
+  const endIndex =
+    nextHeadingIndex === -1 ? content.length : nextHeadingIndex + 1;
+
+  // Trimmed to a single trailing newline, or a section replaced at the end of
+  // the file leaves a blank last line that the markdown fixer removes — and
+  // the next sync would put back, forever.
+  return `${`${content.slice(0, startIndex)}${replacement}${content.slice(endIndex)}`.trimEnd()}\n`;
+};
+
+const main = async (): Promise<void> => {
+  const response = await fetch(SPONSORS_SOURCE_URL);
+
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch sponsors data: ${response.status} ${response.statusText}`
+    );
+  }
+
+  // Links arrive with their tracking params already baked in upstream.
+  // SAFETY: the payload is the trusted middleapi/static sponsors.json this
+  // script exists to mirror; a shape drift shows up as a broken README diff.
+  const sponsors = (await response.json()) as Sponsor[];
+  const readmeFiles = await findReadmes(ROOT_DIR);
+  const replacement = buildSponsorsSection(sponsors);
+
+  const readmeContents = await Promise.all(
+    readmeFiles.map((readmePath) => readFile(readmePath, "utf-8"))
+  );
+
+  const writePromises: Promise<void>[] = [];
+  let updatedCount = 0;
+
+  for (const [i, content] of readmeContents.entries()) {
+    const nextContent = replaceSponsorsSection(content, replacement);
+    const readmePath = readmeFiles[i];
+
+    if (readmePath && nextContent !== content) {
+      writePromises.push(writeFile(readmePath, nextContent));
+      updatedCount += 1;
+    }
+  }
+
+  await Promise.all(writePromises);
+  console.log(`Updated sponsors section in ${updatedCount} README files.`);
+};
+
+try {
+  await main();
+} catch (error) {
+  console.error(error);
+  process.exitCode = 1;
+}

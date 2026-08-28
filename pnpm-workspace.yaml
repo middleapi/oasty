@@ -1,0 +1,12 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+# Lets playgrounds/* resolve local packages without the 'workspace:' protocol
+# during development. When a playground is cloned standalone, the same
+# dependencies resolve to registry versions instead.
+linkWorkspacePackages: true
+preferWorkspacePackages: true
+
+allowBuilds:
+  simple-git-hooks: false

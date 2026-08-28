@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint_and_typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - run: pnpm i
+
+      - run: pnpm run lint:check
+
+      - run: pnpm run type:check
+
+  test_matrix:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [26, 24, 22, 20]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - run: pnpm runtime set node ${{ matrix.node-version }}
+
+      - run: pnpm i
+
+      - run: pnpm run test:coverage
+
+      - uses: codecov/codecov-action@v7
+        if: matrix.node-version == 24
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}

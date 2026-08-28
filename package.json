@@ -1,0 +1,43 @@
+{
+  "name": "@oasty/repo",
+  "version": "0.0.0",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "prepare": "simple-git-hooks",
+    "type:check": "pnpm run -r type:check && tsc",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "lint:check": "ultracite check",
+    "lint:fix": "ultracite fix",
+    "repo:fix": "sherif --fix",
+    "sync:sponsors": "node scripts/sync-sponsors.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.0",
+    "@vitest/coverage-v8": "^4.1.11",
+    "lint-staged": "^17.4.1",
+    "oxfmt": "^0.65.0",
+    "oxlint": "^1.80.0",
+    "sherif": "^1.13.0",
+    "simple-git-hooks": "^2.13.1",
+    "typescript": "^7.0.2",
+    "ultracite": "7.10.7",
+    "vitest": "^4.1.11"
+  },
+  "simple-git-hooks": {
+    "pre-commit": "pnpm lint-staged"
+  },
+  "lint-staged": {
+    "*.{js,jsx,ts,tsx,json,jsonc,css,scss,md,mdx}": [
+      "pnpm run lint:fix"
+    ]
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "^12.0.0",
+      "onFail": "download"
+    }
+  }
+}
