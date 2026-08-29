@@ -5,6 +5,7 @@ import {
   mapArray,
   mapRecord,
   setKey,
+  withCycleGuard,
 } from "./shared";
 import type { UnknownRecord } from "./shared";
 
@@ -216,5 +217,51 @@ describe("setKey", () => {
     expect(Object.getPrototypeOf(target)).toBe(Object.prototype);
     // SAFETY: probing an arbitrary key on a fresh object to prove Object.prototype was not polluted.
     expect(({} as UnknownRecord).polluted).toBeUndefined();
+  });
+});
+
+describe("deepClone with cycles and shared references", () => {
+  it("preserves object cycles instead of recursing forever", () => {
+    const child: UnknownRecord = {};
+    const node: UnknownRecord = { child, name: "root" };
+    child.parent = node;
+    const clone = deepClone(node);
+    expect(clone).not.toBe(node);
+    expect(clone.name).toBe("root");
+    // SAFETY: deepClone preserves the runtime shape; the test pins the cycle.
+    expect((clone.child as UnknownRecord).parent).toBe(clone);
+  });
+
+  it("preserves array cycles", () => {
+    const list: unknown[] = [1];
+    list.push(list);
+    const clone = deepClone(list);
+    expect(clone).not.toBe(list);
+    expect(clone[0]).toBe(1);
+    expect(clone[1]).toBe(clone);
+  });
+
+  it("clones shared references once", () => {
+    const shared = { a: 1 };
+    const input = { x: shared, y: shared };
+    const clone = deepClone(input);
+    expect(clone.x).toEqual({ a: 1 });
+    expect(clone.x).not.toBe(shared);
+    expect(clone.x).toBe(clone.y);
+  });
+});
+
+describe("withCycleGuard", () => {
+  it("falls back to a cycle-preserving clone on re-entry", () => {
+    const target: UnknownRecord = {};
+    target.self = target;
+    const result = withCycleGuard(target, () =>
+      withCycleGuard(target, () => "converted")
+    );
+    expect(result).not.toBe("converted");
+    expect(result).not.toBe(target);
+    // SAFETY: the assertion above pins the fallback to the cloned record.
+    const clone = result as UnknownRecord;
+    expect(clone.self).toBe(clone);
   });
 });

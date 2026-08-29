@@ -4,10 +4,11 @@
  * Converts OpenAPI 3.2 documents and schemas to OpenAPI 3.1 (targeting the
  * latest patch release, 3.1.2).
  *
- * The conversion never throws on JSON-shaped (acyclic) input: parts that do
- * not match the expected shape are deep-copied through unchanged, and
- * existing specification extensions (`x-` keys) as well as unknown keys are
- * always preserved. Constructs 3.1 cannot express are converted where an
+ * The conversion never throws: parts that do not match the expected shape
+ * are deep-copied through unchanged, a subtree that cycles back into an
+ * ancestor object is deep-copied with its cycle preserved instead of
+ * converted, and existing specification extensions (`x-` keys) as well as
+ * unknown keys are always preserved. Constructs 3.1 cannot express are converted where an
  * equivalent exists and removed otherwise — the converter never invents
  * `x-` keys of its own:
  *
@@ -52,6 +53,7 @@ import {
   mapRecord,
   omitKeys,
   setKey,
+  withCycleGuard,
 } from "./shared";
 
 const MEDIA_TYPES_REF_PREFIX = "#/components/mediaTypes/";
@@ -331,48 +333,50 @@ const convertMediaType = (value: unknown, context: Context): unknown => {
   if (!isRecord(value)) {
     return deepClone(value);
   }
-  const out: UnknownRecord = {};
-  for (const [key, item] of Object.entries(value)) {
-    switch (key) {
-      // `itemSchema` is handled below; `description`, positional encoding,
-      // and nested encoding are 3.2-only.
-      case "description":
-      case "itemEncoding":
-      case "itemSchema":
-      case "prefixEncoding": {
-        continue;
-      }
-      case "encoding": {
-        setKey(
-          out,
-          key,
-          mapRecord(item, (entry) => convertEncoding(entry, context))
-        );
-        continue;
-      }
-      case "examples": {
-        setKey(
-          out,
-          key,
-          mapRecord(item, (entry) =>
-            convertRefOr(entry, context, convertExample)
-          )
-        );
-        continue;
-      }
-      default: {
-        setKey(out, key, deepClone(item));
+  return withCycleGuard(value, () => {
+    const out: UnknownRecord = {};
+    for (const [key, item] of Object.entries(value)) {
+      switch (key) {
+        // `itemSchema` is handled below; `description`, positional encoding,
+        // and nested encoding are 3.2-only.
+        case "description":
+        case "itemEncoding":
+        case "itemSchema":
+        case "prefixEncoding": {
+          continue;
+        }
+        case "encoding": {
+          setKey(
+            out,
+            key,
+            mapRecord(item, (entry) => convertEncoding(entry, context))
+          );
+          continue;
+        }
+        case "examples": {
+          setKey(
+            out,
+            key,
+            mapRecord(item, (entry) =>
+              convertRefOr(entry, context, convertExample)
+            )
+          );
+          continue;
+        }
+        default: {
+          setKey(out, key, deepClone(item));
+        }
       }
     }
-  }
-  if ("itemSchema" in value && out.schema === undefined) {
-    // The 3.2 sequential media type data model maps streams to arrays.
-    setKey(out, "schema", {
-      items: deepClone(value.itemSchema),
-      type: "array",
-    });
-  }
-  return out;
+    if ("itemSchema" in value && out.schema === undefined) {
+      // The 3.2 sequential media type data model maps streams to arrays.
+      setKey(out, "schema", {
+        items: deepClone(value.itemSchema),
+        type: "array",
+      });
+    }
+    return out;
+  });
 };
 
 const resolveContentEntry = (value: unknown, context: Context): unknown => {
@@ -531,32 +535,34 @@ const convertPathItem = (value: unknown, context: Context): unknown => {
   if (!isRecord(value)) {
     return deepClone(value);
   }
-  const out: UnknownRecord = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (HTTP_METHODS.has(key)) {
-      setKey(out, key, convertOperation(item, context));
-      continue;
+  return withCycleGuard(value, () => {
+    const out: UnknownRecord = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (HTTP_METHODS.has(key)) {
+        setKey(out, key, convertOperation(item, context));
+        continue;
+      }
+      switch (key) {
+        // The QUERY method and arbitrary additional operations are 3.2-only.
+        case "additionalOperations":
+        case "query": {
+          continue;
+        }
+        case "parameters": {
+          setKey(out, key, convertParameterList(item, context));
+          continue;
+        }
+        case "servers": {
+          setKey(out, key, mapArray(item, convertServer));
+          continue;
+        }
+        default: {
+          setKey(out, key, deepClone(item));
+        }
+      }
     }
-    switch (key) {
-      // The QUERY method and arbitrary additional operations are 3.2-only.
-      case "additionalOperations":
-      case "query": {
-        continue;
-      }
-      case "parameters": {
-        setKey(out, key, convertParameterList(item, context));
-        continue;
-      }
-      case "servers": {
-        setKey(out, key, mapArray(item, convertServer));
-        continue;
-      }
-      default: {
-        setKey(out, key, deepClone(item));
-      }
-    }
-  }
-  return out;
+    return out;
+  });
 };
 
 const convertPaths = (value: unknown, context: Context): unknown =>

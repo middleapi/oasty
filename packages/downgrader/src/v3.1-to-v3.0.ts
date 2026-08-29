@@ -4,10 +4,11 @@
  * Converts OpenAPI 3.1 documents and schemas to OpenAPI 3.0 (targeting the
  * latest patch release, 3.0.4).
  *
- * The conversion never throws on JSON-shaped (acyclic) input: parts that do
- * not match the expected shape are deep-copied through unchanged, and
- * existing specification extensions (`x-` keys) as well as unknown keys are
- * always preserved. Constructs 3.0
+ * The conversion never throws: parts that do not match the expected shape
+ * are deep-copied through unchanged, a subtree that cycles back into an
+ * ancestor object is deep-copied with its cycle preserved instead of
+ * converted, and existing specification extensions (`x-` keys) as well as
+ * unknown keys are always preserved. Constructs 3.0
  * cannot express are converted where an equivalent exists and removed
  * otherwise — the converter never invents `x-` keys of its own:
  *
@@ -42,6 +43,7 @@ import {
   mapRecord,
   omitKeys,
   setKey,
+  withCycleGuard,
 } from "./shared";
 
 const HTTP_METHODS = new Set([
@@ -306,22 +308,24 @@ const convertSchema = (schema: unknown): unknown => {
   if (typeof ref === "string" && Object.keys(schema).length === 1) {
     return { $ref: ref };
   }
-  // oxlint-disable-next-line no-use-before-define -- mutually recursive with convertSchemaFields, as schemas are recursive structures
-  const out = convertSchemaFields(schema);
-  if (typeof ref === "string") {
-    if (out.allOf === undefined || Array.isArray(out.allOf)) {
-      // 3.0 references must stand alone: keep the siblings and move the
-      // reference into an `allOf` member.
-      out.allOf = [
-        { $ref: ref },
-        ...(Array.isArray(out.allOf) ? out.allOf : []),
-      ];
-    } else {
-      // A malformed allOf passes through, so the reference stays in place.
-      setKey(out, "$ref", ref);
+  return withCycleGuard(schema, () => {
+    // oxlint-disable-next-line no-use-before-define -- mutually recursive with convertSchemaFields, as schemas are recursive structures
+    const out = convertSchemaFields(schema);
+    if (typeof ref === "string") {
+      if (out.allOf === undefined || Array.isArray(out.allOf)) {
+        // 3.0 references must stand alone: keep the siblings and move the
+        // reference into an `allOf` member.
+        out.allOf = [
+          { $ref: ref },
+          ...(Array.isArray(out.allOf) ? out.allOf : []),
+        ];
+      } else {
+        // A malformed allOf passes through, so the reference stays in place.
+        setKey(out, "$ref", ref);
+      }
     }
-  }
-  return out;
+    return out;
+  });
 };
 
 /** Converts the keywords holding nested schemas; returns whether `key` was one. */
@@ -651,31 +655,33 @@ const convertMediaType = (value: unknown): unknown => {
   if (!isRecord(value)) {
     return deepClone(value);
   }
-  const out: UnknownRecord = {};
-  for (const [key, item] of Object.entries(value)) {
-    switch (key) {
-      case "schema": {
-        setKey(out, key, convertSchema(item));
-        continue;
-      }
-      case "examples": {
-        setKey(
-          out,
-          key,
-          mapRecord(item, (entry) => convertRefOr(entry, deepClone))
-        );
-        continue;
-      }
-      case "encoding": {
-        setKey(out, key, mapRecord(item, convertEncoding));
-        continue;
-      }
-      default: {
-        setKey(out, key, deepClone(item));
+  return withCycleGuard(value, () => {
+    const out: UnknownRecord = {};
+    for (const [key, item] of Object.entries(value)) {
+      switch (key) {
+        case "schema": {
+          setKey(out, key, convertSchema(item));
+          continue;
+        }
+        case "examples": {
+          setKey(
+            out,
+            key,
+            mapRecord(item, (entry) => convertRefOr(entry, deepClone))
+          );
+          continue;
+        }
+        case "encoding": {
+          setKey(out, key, mapRecord(item, convertEncoding));
+          continue;
+        }
+        default: {
+          setKey(out, key, deepClone(item));
+        }
       }
     }
-  }
-  return out;
+    return out;
+  });
 };
 
 const convertRequestBody = (value: unknown): unknown => {
@@ -805,29 +811,31 @@ const convertPathItem = (
   if (!isRecord(value)) {
     return deepClone(value);
   }
-  const out: UnknownRecord = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (HTTP_METHODS.has(key)) {
-      setKey(out, key, convertOperation(item, index));
-      continue;
-    }
-    switch (key) {
-      case "parameters": {
-        setKey(
-          out,
-          key,
-          mapArray(item, (entry) =>
-            convertRefOr(entry, convertParameterOrHeader)
-          )
-        );
+  return withCycleGuard(value, () => {
+    const out: UnknownRecord = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (HTTP_METHODS.has(key)) {
+        setKey(out, key, convertOperation(item, index));
         continue;
       }
-      default: {
-        setKey(out, key, deepClone(item));
+      switch (key) {
+        case "parameters": {
+          setKey(
+            out,
+            key,
+            mapArray(item, (entry) =>
+              convertRefOr(entry, convertParameterOrHeader)
+            )
+          );
+          continue;
+        }
+        default: {
+          setKey(out, key, deepClone(item));
+        }
       }
     }
-  }
-  return out;
+    return out;
+  });
 };
 
 const convertPaths = (value: unknown, index: SecuritySchemeIndex): unknown =>

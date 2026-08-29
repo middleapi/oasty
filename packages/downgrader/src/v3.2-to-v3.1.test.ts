@@ -3,6 +3,7 @@
 import type { OpenAPIV3_2 } from "@oasty/types";
 import { describe, expect, it } from "vitest";
 
+import type { UnknownRecord } from "./shared";
 import { downgradeSchemaV32ToV31, downgradeSpecV32ToV31 } from "./v3.2-to-v3.1";
 
 const asSpec = (value: unknown): OpenAPIV3_2.OpenAPIObject =>
@@ -2181,5 +2182,20 @@ describe("malformed header maps", () => {
         },
       },
     });
+  });
+});
+
+describe("cyclic input", () => {
+  it("converts a path item that cycles through its callbacks without throwing", () => {
+    const callback: UnknownRecord = {};
+    const pathItem: UnknownRecord = {
+      get: { callbacks: { cb: callback }, responses: {} },
+    };
+    callback.expr = pathItem;
+    expect(() =>
+      downgradeSpecV32ToV31(
+        asSpec({ openapi: "3.2.0", paths: { "/a": pathItem } })
+      )
+    ).not.toThrow();
   });
 });

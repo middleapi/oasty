@@ -2,7 +2,7 @@
 
 Downgrade [OpenAPI Specification](https://spec.openapis.org/) documents one minor version at a time: 3.2 → 3.1 and 3.1 → 3.0. Each converter works on an entire document or on a single Schema Object.
 
-- **Never throws on JSON-shaped input**: malformed parts are deep-copied through unchanged instead of failing the whole conversion. Cyclic object graphs (e.g. the output of a `$ref` dereferencer) and pathologically deep nesting are out of scope — feed the converters what `JSON.parse` could have produced.
+- **Never throws**: malformed parts are deep-copied through unchanged instead of failing the whole conversion, and cyclic object graphs (e.g. the output of a `$ref` dereferencer) don't recurse forever — a subtree that cycles back into an ancestor is deep-copied with its cycle preserved instead of converted. Only pathologically deep nesting (thousands of levels) can still exhaust the call stack.
 - **Never mutates**: the input document is left untouched.
 - **Extension-preserving, never extension-inventing**: existing `x-` keys and unknown keys always survive, while constructs the target version cannot express are converted where an equivalent exists and removed otherwise.
 

@@ -2,6 +2,7 @@
 
 import type { OpenAPIV3_1 } from "@oasty/types";
 
+import type { UnknownRecord } from "./shared";
 import { downgradeSchemaV31ToV30, downgradeSpecV31ToV30 } from "./v3.1-to-v3.0";
 
 const asSpec = (value: unknown): OpenAPIV3_1.OpenAPIObject =>
@@ -1686,5 +1687,28 @@ describe("deep documents", () => {
       deep = asSchema({ items: deep, type: "array" });
     }
     expect(() => downgradeSchemaV31ToV30(deep)).not.toThrow();
+  });
+});
+
+describe("cyclic input", () => {
+  it("converts a schema whose subtree cycles back to itself without throwing", () => {
+    const properties: UnknownRecord = {};
+    const node: UnknownRecord = { properties, type: "object" };
+    properties.self = node;
+    const result = downgradeSchemaV31ToV30(asSchema(node));
+    expect(result).toHaveProperty(["properties", "self", "type"], "object");
+  });
+
+  it("converts a path item that cycles through its callbacks without throwing", () => {
+    const callback: UnknownRecord = {};
+    const pathItem: UnknownRecord = {
+      get: { callbacks: { cb: callback }, responses: {} },
+    };
+    callback.expr = pathItem;
+    expect(() =>
+      downgradeSpecV31ToV30(
+        asSpec({ info, openapi: "3.1.0", paths: { "/a": pathItem } })
+      )
+    ).not.toThrow();
   });
 });
