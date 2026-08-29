@@ -29,7 +29,7 @@ const schema = downgradeSchemaV31ToV30({ type: ["string", "null"] });
 
 ## 3.2 → 3.1
 
-Schema Objects pass through unchanged: the 3.2 Schema Object keyword set is identical to 3.1's (3.2 defines its own dialect URI, but only the OAS base vocabulary gained fields), and JSON Schema allows arbitrary extra keywords without an `x-` prefix, so the 3.2-only fields (discriminator `defaultMapping`, XML `nodeType`) legally ride along as extra keys. Note the semantic cost: 3.1 tooling will not act on them — in particular a `defaultMapping` fallback stops taking effect (`nodeType` is recovered on the 3.1 → 3.0 hop).
+Schema Objects pass through unchanged: the 3.2 Schema Object keyword set is identical to 3.1's (3.2 defines its own dialect URI, but only the OAS base vocabulary gained fields), and the 3.2-only fields (discriminator `defaultMapping`, XML `nodeType`) are deliberately retained. Two caveats: the standard OpenAPI 3.1 document schema tolerates them (Schema Object internals are open there), but the strict OAS 3.1 base-vocabulary meta-schema closes the XML and Discriminator Objects to their fixed fields plus `x-`, so a base-vocabulary validator will flag them; and 3.1 tooling will not act on them — in particular a `defaultMapping` fallback stops taking effect (`nodeType` is recovered on the 3.1 → 3.0 hop).
 
 Converted:
 

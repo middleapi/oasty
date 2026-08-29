@@ -1712,3 +1712,38 @@ describe("cyclic input", () => {
     ).not.toThrow();
   });
 });
+
+describe("path parameter required synthesis", () => {
+  it("adds required: true to path parameters that lack it", () => {
+    const result = downgradeSpecV31ToV30(
+      asSpec({
+        info,
+        openapi: "3.1.0",
+        paths: {
+          "/a/{id}": {
+            get: {
+              parameters: [
+                {
+                  content: { "text/plain": { schema: { type: "string" } } },
+                  in: "path",
+                  name: "id",
+                },
+                { in: "query", name: "q", schema: {} },
+              ],
+              responses: {},
+            },
+          },
+        },
+      })
+    );
+    expect(result.paths?.["/a/{id}"]?.get?.parameters).toEqual([
+      {
+        content: { "text/plain": { schema: { type: "string" } } },
+        in: "path",
+        name: "id",
+        required: true,
+      },
+      { in: "query", name: "q", schema: {} },
+    ]);
+  });
+});

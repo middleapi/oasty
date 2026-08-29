@@ -33,10 +33,12 @@
  *   synthesized as a last resort).
  * - Schema Objects pass through unchanged: the 3.2 Schema Object keyword
  *   set is identical to 3.1's (3.2 defines its own dialect URI, but only
- *   the OAS base vocabulary gained fields), and JSON Schema allows
- *   arbitrary extra keywords, so the 3.2-only fields (discriminator
- *   `defaultMapping`, XML `nodeType`) legally ride along as extra keys —
- *   3.1 tooling will not act on them.
+ *   the OAS base vocabulary gained fields), so the 3.2-only fields
+ *   (discriminator `defaultMapping`, XML `nodeType`) are deliberately
+ *   retained. The standard 3.1 document schema tolerates them, but the
+ *   strict OAS base-vocabulary meta-schema closes the XML and
+ *   Discriminator Objects to `x-` extras, and 3.1 tooling will not act on
+ *   them; `nodeType` is recovered on the 3.1-to-3.0 hop.
  *
  * @see {@link https://spec.openapis.org/oas/v3.2.0.html}
  * @see {@link https://spec.openapis.org/oas/v3.1.2.html}
@@ -56,6 +58,7 @@ import {
   withCycleGuard,
 } from "./shared";
 
+const HEADERS_REF_PREFIX = "#/components/headers/";
 const MEDIA_TYPES_REF_PREFIX = "#/components/mediaTypes/";
 const PARAMETERS_REF_PREFIX = "#/components/parameters/";
 
@@ -84,7 +87,9 @@ const DROPPED_PARAMETER = Symbol("dropped parameter");
 interface Context {
   /** The raw `components.mediaTypes` map, used to inline references. */
   mediaTypes: UnknownRecord | undefined;
-  /** `$ref` strings of removed querystring `components.parameters` entries. */
+  /** `$ref` strings of `components.headers` entries conversion removes. */
+  removedHeaderRefs: ReadonlySet<string>;
+  /** `$ref` strings of `components.parameters` entries conversion removes. */
   removedParameterRefs: ReadonlySet<string>;
   /** Media type names currently being resolved, for cycle detection. */
   resolving: Set<string>;
@@ -105,10 +110,11 @@ const parseMediaTypeName = (ref: string): string | undefined => {
  * Converts an OpenAPI 3.2 Schema Object to its OpenAPI 3.1 form: a deep
  * clone. The 3.2 Schema Object keyword set is identical to 3.1's (3.2
  * defines its own dialect URI, but only the OAS base vocabulary gained
- * fields), and JSON Schema allows arbitrary extra keywords without an `x-`
- * prefix, so even the 3.2-only fields (discriminator `defaultMapping`, XML
- * `nodeType`) are legal to keep as-is — though 3.1 tooling will not act on
- * them.
+ * fields), so the 3.2-only fields (discriminator `defaultMapping`, XML
+ * `nodeType`) are deliberately retained. The standard 3.1 document schema
+ * tolerates them; the strict OAS base-vocabulary meta-schema closes the
+ * XML and Discriminator Objects to `x-` extras, and 3.1 tooling will not
+ * act on them.
  */
 export const downgradeSchemaV32ToV31 = <T = unknown>(
   schema: OpenAPIV3_2.SchemaObject<T>
@@ -202,10 +208,13 @@ const convertRefOr = (
 const isQuerystringParameter = (value: unknown): boolean =>
   isRecord(value) && value.in === "querystring";
 
-/** Whether the value references a removed querystring component parameter. */
-const isRemovedParameterRef = (value: unknown, context: Context): boolean => {
+/** Whether the value references a component entry conversion removes. */
+const isRemovedRef = (
+  value: unknown,
+  removed: ReadonlySet<string>
+): boolean => {
   const ref = getRef(value);
-  return ref !== undefined && context.removedParameterRefs.has(ref);
+  return ref !== undefined && removed.has(ref);
 };
 
 /** Parameter Objects and Header Objects share every field this converter touches. */
@@ -280,7 +289,10 @@ const convertParameterList = (value: unknown, context: Context): unknown => {
   return value
     .filter(
       (item) =>
-        !(isQuerystringParameter(item) || isRemovedParameterRef(item, context))
+        !(
+          isQuerystringParameter(item) ||
+          isRemovedRef(item, context.removedParameterRefs)
+        )
     )
     .map((item) => convertRefOr(item, context, convertParameterOrHeader))
     .filter((item) => item !== DROPPED_PARAMETER);
@@ -296,6 +308,9 @@ const convertHeaderMap = (value: unknown, context: Context): unknown => {
   }
   const out: UnknownRecord = {};
   for (const [name, item] of Object.entries(value)) {
+    if (isRemovedRef(item, context.removedHeaderRefs)) {
+      continue;
+    }
     const converted = convertRefOr(item, context, convertParameterOrHeader);
     if (converted !== DROPPED_PARAMETER) {
       setKey(out, name, converted);
@@ -583,7 +598,10 @@ const convertParameterComponents = (
   }
   const out: UnknownRecord = {};
   for (const [name, item] of Object.entries(value)) {
-    if (isQuerystringParameter(item) || isRemovedParameterRef(item, context)) {
+    if (
+      isQuerystringParameter(item) ||
+      isRemovedRef(item, context.removedParameterRefs)
+    ) {
       continue;
     }
     const converted = convertRefOr(item, context, convertParameterOrHeader);
@@ -688,26 +706,78 @@ const convertComponents = (value: unknown, context: Context): unknown => {
 };
 
 /** Collects the `$ref` strings of querystring `components.parameters` entries. */
-const indexRemovedParameterRefs = (components: unknown): Set<string> => {
+/**
+ * Whether a content-map entry is a reference that cannot be inlined
+ * (external, unknown, or cyclic target) and would therefore be removed.
+ */
+const isUnresolvableContentRef = (
+  item: unknown,
+  mediaTypes: UnknownRecord | undefined,
+  seen: Set<string>
+): boolean => {
+  const ref = getRef(item);
+  if (ref === undefined) {
+    return false;
+  }
+  const name = parseMediaTypeName(ref);
+  if (
+    name === undefined ||
+    mediaTypes === undefined ||
+    !Object.hasOwn(mediaTypes, name) ||
+    seen.has(name)
+  ) {
+    return true;
+  }
+  seen.add(name);
+  return isUnresolvableContentRef(mediaTypes[name], mediaTypes, seen);
+};
+
+/** Whether conversion would strip every entry of the value's `content`. */
+const losesEntireContent = (
+  value: unknown,
+  mediaTypes: UnknownRecord | undefined
+): boolean => {
+  if (!(isRecord(value) && isRecord(value.content))) {
+    return false;
+  }
+  const entries = Object.values(value.content);
+  return (
+    entries.length > 0 &&
+    entries.every((item) =>
+      isUnresolvableContentRef(item, mediaTypes, new Set())
+    )
+  );
+};
+
+/**
+ * Collects the `$ref` strings of component entries conversion removes
+ * (querystring parameters, and parameters or headers losing their entire
+ * `content`), iterated to a fixpoint so chains of reference aliases are
+ * removed with their targets.
+ */
+const indexRemovedComponentRefs = (
+  map: unknown,
+  prefix: string,
+  mediaTypes: UnknownRecord | undefined,
+  isDirectlyRemoved: (item: unknown) => boolean
+): Set<string> => {
   const removed = new Set<string>();
-  const parameters = isRecord(components) ? components.parameters : undefined;
-  if (!isRecord(parameters)) {
+  if (!isRecord(map)) {
     return removed;
   }
-  const entries = Object.entries(parameters);
-  // Iterated to a fixpoint so chains of reference aliases to removed
-  // querystring entries are removed with their targets.
+  const entries = Object.entries(map);
   let changed = true;
   while (changed) {
     changed = false;
-    for (const [name, parameter] of entries) {
-      const selfRef = PARAMETERS_REF_PREFIX + name;
+    for (const [name, item] of entries) {
+      const selfRef = prefix + name;
       if (removed.has(selfRef)) {
         continue;
       }
-      const target = getRef(parameter);
+      const target = getRef(item);
       if (
-        isQuerystringParameter(parameter) ||
+        isDirectlyRemoved(item) ||
+        losesEntireContent(item, mediaTypes) ||
         (target !== undefined && removed.has(target))
       ) {
         removed.add(selfRef);
@@ -727,9 +797,21 @@ const convertSpec = (spec: unknown): unknown => {
     isRecord(components) && isRecord(components.mediaTypes)
       ? components.mediaTypes
       : undefined;
+  const componentMaps = isRecord(components) ? components : undefined;
   const context: Context = {
     mediaTypes,
-    removedParameterRefs: indexRemovedParameterRefs(components),
+    removedHeaderRefs: indexRemovedComponentRefs(
+      componentMaps?.headers,
+      HEADERS_REF_PREFIX,
+      mediaTypes,
+      () => false
+    ),
+    removedParameterRefs: indexRemovedComponentRefs(
+      componentMaps?.parameters,
+      PARAMETERS_REF_PREFIX,
+      mediaTypes,
+      isQuerystringParameter
+    ),
     resolving: new Set(),
   };
   const out: UnknownRecord = {};

@@ -114,10 +114,11 @@ const expectValidAs = async (
  * - `security-scheme-object-examples`: contains a `$ref` to an external URL,
  *   which the validator cannot resolve ("only internal refs are supported") —
  *   a validator limitation, not a conversion defect.
- * - `style-defaults`: its `encoding_object_defaults` parameter is a `content`
- *   path parameter without `required: true`; the official 3.1 schema only
- *   enforces `required` for schema-based path parameters while the 3.0 schema
- *   enforces it for all, so the input itself is inexpressible in valid 3.0.
+ * - `style-defaults`: it carries `x-comment` inside an Encoding Object,
+ *   which the converter rightly preserves but the official 3.0 schema
+ *   rejects — its Encoding definition is `additionalProperties: false`
+ *   with no `^x-` carve-out, an upstream schema strictness (the 3.0 prose
+ *   declares the Encoding Object extensible).
  */
 const corpus31: readonly (readonly [
   name: string,
@@ -234,6 +235,7 @@ describe("3.1 corpus downgraded to 3.0", () => {
   it.each(corpus31)(
     "converts %s to a valid 3.0 document without mutating the input",
     async (_name, doc) => {
+      await expectValidAs(doc, "3.1");
       const before = structuredClone(doc);
       const v30 = downgradeSpecV31ToV30(doc);
       expect(v30.openapi).toBe("3.0.4");
@@ -247,6 +249,7 @@ describe("3.2 corpus downgraded to 3.1 and chained to 3.0", () => {
   it.each(corpus32)(
     "converts %s to valid 3.1 and 3.0 documents without mutating the input",
     async (_name, doc) => {
+      await expectValidAs(doc, "3.2");
       const before = structuredClone(doc);
       const v31 = downgradeSpecV32ToV31(doc);
       expect(v31.openapi).toBe("3.1.2");

@@ -2199,3 +2199,67 @@ describe("cyclic input", () => {
     ).not.toThrow();
   });
 });
+
+describe("references to components removed for uninlinable content", () => {
+  it("removes parameter and header references whose targets lost their entire content", () => {
+    const result = downgradeSpecV32ToV31(
+      asSpec({
+        components: {
+          headers: {
+            Broken: {
+              content: {
+                "text/plain": { $ref: "#/components/mediaTypes/Loop" },
+              },
+            },
+            BrokenAlias: { $ref: "#/components/headers/Broken" },
+          },
+          mediaTypes: { Loop: { $ref: "#/components/mediaTypes/Loop" } },
+          parameters: {
+            Broken: {
+              content: {
+                "text/plain": { $ref: "#/components/mediaTypes/Missing" },
+              },
+              in: "query",
+              name: "q",
+            },
+            BrokenAlias: { $ref: "#/components/parameters/Broken" },
+          },
+        },
+        openapi: "3.2.0",
+        paths: {
+          "/a": {
+            get: {
+              parameters: [
+                { $ref: "#/components/parameters/Broken" },
+                { $ref: "#/components/parameters/BrokenAlias" },
+              ],
+              responses: {
+                "200": {
+                  description: "ok",
+                  headers: {
+                    "X-Broken": { $ref: "#/components/headers/Broken" },
+                    "X-BrokenAlias": {
+                      $ref: "#/components/headers/BrokenAlias",
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      })
+    );
+    expect(result).toEqual({
+      components: { headers: {}, parameters: {} },
+      openapi: "3.1.2",
+      paths: {
+        "/a": {
+          get: {
+            parameters: [],
+            responses: { "200": { description: "ok", headers: {} } },
+          },
+        },
+      },
+    });
+  });
+});

@@ -267,10 +267,11 @@ const convertContentKeywords = (
 };
 
 /**
- * 3.1 documents produced from 3.2 ones may carry the 3.2 `nodeType` field in
- * XML Objects (a legal extra key in 3.1, but 3.0 forbids unknown XML Object
- * fields): it maps back to the `attribute`/`wrapped` flags where expressible
- * and is removed.
+ * 3.1 documents produced from 3.2 ones may carry the 3.2 `nodeType` field
+ * in XML Objects (tolerated by the standard 3.1 document schema, though
+ * the OAS base-vocabulary meta-schema closes XML Objects to `x-` extras;
+ * 3.0 forbids it outright): it maps back to the `attribute`/`wrapped`
+ * flags where expressible and is removed.
  */
 const convertXml = (value: unknown, schemaType: unknown): unknown => {
   if (!isRecord(value) || !("nodeType" in value)) {
@@ -626,6 +627,11 @@ const convertParameterOrHeader = (value: unknown): unknown => {
         setKey(out, key, deepClone(item));
       }
     }
+  }
+  if (value.in === "path") {
+    // 3.0 requires `required: true` on every path parameter; 3.1 only
+    // structurally enforces it for schema-based ones.
+    out.required = true;
   }
   return out;
 };
