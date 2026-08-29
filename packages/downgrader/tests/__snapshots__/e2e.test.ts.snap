@@ -1,0 +1,954 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`3.1 example documents downgraded to 3.0 > converts the 3.1 mega document, removing 3.1-only constructs and the mutualTLS scheme 1`] = `
+{
+  "components": {
+    "schemas": {
+      "Foo": {
+        "properties": {
+          "type": {
+            "enum": [
+              "foo",
+            ],
+          },
+        },
+        "type": "object",
+      },
+    },
+    "securitySchemes": {},
+  },
+  "info": {
+    "license": {
+      "name": "Apache 2.0",
+    },
+    "title": "My API",
+    "version": "1.0.0",
+  },
+  "openapi": "3.0.4",
+  "paths": {
+    "/": {
+      "get": {
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+          },
+        },
+      },
+    },
+    "/{pathTest}": {},
+  },
+}
+`;
+
+exports[`3.1 example documents downgraded to 3.0 > converts the non-OAuth-scopes example, emptying roles on the non-OAuth scheme 1`] = `
+{
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "bearerFormat": "jwt",
+        "description": "note: non-oauth scopes are not defined at the securityScheme level",
+        "scheme": "bearer",
+        "type": "http",
+      },
+    },
+  },
+  "info": {
+    "title": "Non-oAuth Scopes example",
+    "version": "1.0.0",
+  },
+  "openapi": "3.0.4",
+  "paths": {
+    "/users": {
+      "get": {
+        "responses": {
+          "default": {
+            "description": "",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+      },
+    },
+  },
+}
+`;
+
+exports[`3.1 example documents downgraded to 3.0 > converts the tictactoe example to a valid 3.0.4 document without mutating the input 1`] = `
+{
+  "components": {
+    "parameters": {
+      "columnParam": {
+        "description": "Board column (horizontal coordinate)",
+        "in": "path",
+        "name": "column",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/coordinate",
+        },
+      },
+      "rowParam": {
+        "description": "Board row (vertical coordinate)",
+        "in": "path",
+        "name": "row",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/coordinate",
+        },
+      },
+    },
+    "schemas": {
+      "board": {
+        "items": {
+          "items": {
+            "$ref": "#/components/schemas/mark",
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array",
+        },
+        "maxItems": 3,
+        "minItems": 3,
+        "type": "array",
+      },
+      "coordinate": {
+        "example": 1,
+        "maximum": 3,
+        "minimum": 1,
+        "type": "integer",
+      },
+      "errorMessage": {
+        "description": "A text message describing an error",
+        "maxLength": 256,
+        "type": "string",
+      },
+      "mark": {
+        "description": "Possible values for a board square. \`.\` means empty square.",
+        "enum": [
+          ".",
+          "X",
+          "O",
+        ],
+        "example": ".",
+        "type": "string",
+      },
+      "status": {
+        "properties": {
+          "board": {
+            "$ref": "#/components/schemas/board",
+          },
+          "winner": {
+            "$ref": "#/components/schemas/winner",
+          },
+        },
+        "type": "object",
+      },
+      "winner": {
+        "description": "Winner of the game. \`.\` means nobody has won yet.",
+        "enum": [
+          ".",
+          "X",
+          "O",
+        ],
+        "example": ".",
+        "type": "string",
+      },
+    },
+    "securitySchemes": {
+      "app2AppOauth": {
+        "flows": {
+          "clientCredentials": {
+            "scopes": {
+              "board:read": "Read the board",
+            },
+            "tokenUrl": "https://learn.openapis.org/oauth/2.0/token",
+          },
+        },
+        "type": "oauth2",
+      },
+      "basicHttpAuthentication": {
+        "description": "Basic HTTP Authentication",
+        "scheme": "Basic",
+        "type": "http",
+      },
+      "bearerHttpAuthentication": {
+        "bearerFormat": "JWT",
+        "description": "Bearer token using a JWT",
+        "scheme": "Bearer",
+        "type": "http",
+      },
+      "defaultApiKey": {
+        "description": "API key provided in console",
+        "in": "header",
+        "name": "api-key",
+        "type": "apiKey",
+      },
+      "user2AppOauth": {
+        "flows": {
+          "authorizationCode": {
+            "authorizationUrl": "https://learn.openapis.org/oauth/2.0/auth",
+            "scopes": {
+              "board:read": "Read the board",
+              "board:write": "Write to the board",
+            },
+            "tokenUrl": "https://learn.openapis.org/oauth/2.0/token",
+          },
+        },
+        "type": "oauth2",
+      },
+    },
+  },
+  "info": {
+    "description": "This API allows writing down marks on a Tic Tac Toe board
+and requesting the state of the board or of individual squares.
+",
+    "title": "Tic Tac Toe",
+    "version": "1.0.0",
+  },
+  "openapi": "3.0.4",
+  "paths": {
+    "/board": {
+      "get": {
+        "description": "Retrieves the current state of the board and the winner.",
+        "operationId": "get-board",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/status",
+                },
+              },
+            },
+            "description": "OK",
+          },
+        },
+        "security": [
+          {
+            "defaultApiKey": [],
+          },
+          {
+            "app2AppOauth": [
+              "board:read",
+            ],
+          },
+        ],
+        "summary": "Get the whole board",
+        "tags": [
+          "Gameplay",
+        ],
+      },
+    },
+    "/board/{row}/{column}": {
+      "get": {
+        "description": "Retrieves the requested square.",
+        "operationId": "get-square",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/mark",
+                },
+              },
+            },
+            "description": "OK",
+          },
+          "400": {
+            "content": {
+              "text/html": {
+                "example": "Illegal coordinates",
+                "schema": {
+                  "$ref": "#/components/schemas/errorMessage",
+                },
+              },
+            },
+            "description": "The provided parameters are incorrect",
+          },
+        },
+        "security": [
+          {
+            "bearerHttpAuthentication": [],
+          },
+          {
+            "user2AppOauth": [
+              "board:read",
+            ],
+          },
+        ],
+        "summary": "Get a single board square",
+        "tags": [
+          "Gameplay",
+        ],
+      },
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/rowParam",
+        },
+        {
+          "$ref": "#/components/parameters/columnParam",
+        },
+      ],
+      "put": {
+        "description": "Places a mark on the board and retrieves the whole board and the winner (if any).",
+        "operationId": "put-square",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/mark",
+              },
+            },
+          },
+          "required": true,
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/status",
+                },
+              },
+            },
+            "description": "OK",
+          },
+          "400": {
+            "content": {
+              "text/html": {
+                "examples": {
+                  "illegalCoordinates": {
+                    "value": "Illegal coordinates.",
+                  },
+                  "invalidMark": {
+                    "value": "Invalid Mark (X or O).",
+                  },
+                  "notEmpty": {
+                    "value": "Square is not empty.",
+                  },
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/errorMessage",
+                },
+              },
+            },
+            "description": "The provided parameters are incorrect",
+          },
+        },
+        "security": [
+          {
+            "bearerHttpAuthentication": [],
+          },
+          {
+            "user2AppOauth": [
+              "board:write",
+            ],
+          },
+        ],
+        "summary": "Set a single board square",
+        "tags": [
+          "Gameplay",
+        ],
+      },
+    },
+  },
+  "tags": [
+    {
+      "name": "Gameplay",
+    },
+  ],
+}
+`;
+
+exports[`3.1 example documents downgraded to 3.0 > converts the webhook example, removing webhooks and synthesizing empty paths 1`] = `
+{
+  "components": {
+    "schemas": {
+      "Pet": {
+        "properties": {
+          "id": {
+            "format": "int64",
+            "type": "integer",
+          },
+          "name": {
+            "type": "string",
+          },
+          "tag": {
+            "type": "string",
+          },
+        },
+        "required": [
+          "id",
+          "name",
+        ],
+        "type": "object",
+      },
+    },
+  },
+  "info": {
+    "title": "Webhook Example",
+    "version": "1.0.0",
+  },
+  "openapi": "3.0.4",
+  "paths": {},
+}
+`;
+
+exports[`3.2 example documents downgraded to 3.1 and chained to 3.0 > converts the 3.2 mega document, preserving the discriminator defaultMapping in the schema > v3.0 1`] = `
+{
+  "components": {
+    "schemas": {
+      "Foo": {
+        "properties": {
+          "type": {
+            "enum": [
+              "foo",
+            ],
+          },
+        },
+        "type": "object",
+      },
+    },
+    "securitySchemes": {},
+  },
+  "info": {
+    "license": {
+      "name": "Apache 2.0",
+    },
+    "title": "My API",
+    "version": "1.0.0",
+  },
+  "openapi": "3.0.4",
+  "paths": {
+    "/": {
+      "get": {
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+          },
+        },
+      },
+    },
+    "/{pathTest}": {},
+  },
+}
+`;
+
+exports[`3.2 example documents downgraded to 3.1 and chained to 3.0 > converts the 3.2 mega document, preserving the discriminator defaultMapping in the schema > v3.1 1`] = `
+{
+  "components": {
+    "pathItems": {
+      "myPathItem": {
+        "post": {
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Foo",
+                    },
+                  ],
+                  "discriminator": {
+                    "defaultMapping": "Bar",
+                    "mapping": {
+                      "foo": "Foo",
+                    },
+                    "propertyName": "type",
+                    "x-extension": true,
+                  },
+                  "externalDocs": {
+                    "description": "More docs!",
+                    "url": "https://example.com/elsewhere.html",
+                  },
+                  "myArbitraryKeyword": true,
+                  "properties": {
+                    "arr": {
+                      "$comment": "Array without items keyword",
+                      "type": "array",
+                    },
+                    "either": {
+                      "type": [
+                        "string",
+                        "null",
+                      ],
+                    },
+                    "int": {
+                      "exclusiveMaximum": 100,
+                      "exclusiveMinimum": 0,
+                      "type": "integer",
+                    },
+                    "none": {
+                      "type": "null",
+                    },
+                    "type": {
+                      "type": "string",
+                    },
+                  },
+                  "type": "object",
+                },
+              },
+            },
+            "required": true,
+          },
+        },
+      },
+    },
+    "schemas": {
+      "Foo": {
+        "properties": {
+          "type": {
+            "const": "foo",
+          },
+        },
+        "type": "object",
+      },
+    },
+    "securitySchemes": {
+      "mtls": {
+        "type": "mutualTLS",
+      },
+    },
+  },
+  "info": {
+    "license": {
+      "identifier": "Apache-2.0",
+      "name": "Apache 2.0",
+    },
+    "summary": "My API's summary",
+    "title": "My API",
+    "version": "1.0.0",
+  },
+  "openapi": "3.1.2",
+  "paths": {
+    "/": {
+      "get": {
+        "parameters": [],
+      },
+    },
+    "/{pathTest}": {},
+  },
+  "webhooks": {
+    "myWebhook": {
+      "$ref": "#/components/pathItems/myPathItem",
+      "description": "Overriding description",
+    },
+  },
+}
+`;
+
+exports[`3.2 example documents downgraded to 3.1 and chained to 3.0 > removes tag summary, parent, and kind of the tags example > v3.0 1`] = `
+{
+  "info": {
+    "title": "Flight API",
+    "version": "1.0.0",
+  },
+  "openapi": "3.0.4",
+  "paths": {
+    "/flights": {
+      "get": {
+        "responses": {
+          "default": {
+            "description": "",
+          },
+        },
+        "summary": "List all flights",
+        "tags": [
+          "flights",
+        ],
+      },
+    },
+    "/flights/delayed": {
+      "get": {
+        "responses": {
+          "default": {
+            "description": "",
+          },
+        },
+        "summary": "Get delayed flights",
+        "tags": [
+          "delays",
+        ],
+      },
+    },
+    "/flights/domestic": {
+      "get": {
+        "responses": {
+          "default": {
+            "description": "",
+          },
+        },
+        "summary": "List domestic flights",
+        "tags": [
+          "domestic",
+        ],
+      },
+    },
+    "/flights/international": {
+      "get": {
+        "responses": {
+          "default": {
+            "description": "",
+          },
+        },
+        "summary": "List international flights",
+        "tags": [
+          "international",
+        ],
+      },
+    },
+  },
+  "tags": [
+    {
+      "description": "Core flight operations",
+      "name": "flights",
+    },
+    {
+      "description": "Flights that cross country borders",
+      "name": "international",
+    },
+    {
+      "description": "Flights within a single country",
+      "name": "domestic",
+    },
+    {
+      "description": "Information about flight delays",
+      "externalDocs": {
+        "description": "Delay compensation policies",
+        "url": "https://docs.example.com/delay-policies",
+      },
+      "name": "delays",
+    },
+  ],
+}
+`;
+
+exports[`3.2 example documents downgraded to 3.1 and chained to 3.0 > removes tag summary, parent, and kind of the tags example > v3.1 1`] = `
+{
+  "info": {
+    "title": "Flight API",
+    "version": "1.0.0",
+  },
+  "openapi": "3.1.2",
+  "paths": {
+    "/flights": {
+      "get": {
+        "summary": "List all flights",
+        "tags": [
+          "flights",
+        ],
+      },
+    },
+    "/flights/delayed": {
+      "get": {
+        "summary": "Get delayed flights",
+        "tags": [
+          "delays",
+        ],
+      },
+    },
+    "/flights/domestic": {
+      "get": {
+        "summary": "List domestic flights",
+        "tags": [
+          "domestic",
+        ],
+      },
+    },
+    "/flights/international": {
+      "get": {
+        "summary": "List international flights",
+        "tags": [
+          "international",
+        ],
+      },
+    },
+  },
+  "tags": [
+    {
+      "description": "Core flight operations",
+      "name": "flights",
+    },
+    {
+      "description": "Flights that cross country borders",
+      "name": "international",
+    },
+    {
+      "description": "Flights within a single country",
+      "name": "domestic",
+    },
+    {
+      "description": "Information about flight delays",
+      "externalDocs": {
+        "description": "Delay compensation policies",
+        "url": "https://docs.example.com/delay-policies",
+      },
+      "name": "delays",
+    },
+  ],
+}
+`;
+
+exports[`3.2 example documents downgraded to 3.1 and chained to 3.0 > removes the query operation of the query example, leaving an empty path item > v3.0 1`] = `
+{
+  "info": {
+    "title": "Flight API",
+    "version": "1.0.0",
+  },
+  "openapi": "3.0.4",
+  "paths": {
+    "/flights/search": {},
+  },
+}
+`;
+
+exports[`3.2 example documents downgraded to 3.1 and chained to 3.0 > removes the query operation of the query example, leaving an empty path item > v3.1 1`] = `
+{
+  "info": {
+    "title": "Flight API",
+    "version": "1.0.0",
+  },
+  "openapi": "3.1.2",
+  "paths": {
+    "/flights/search": {},
+  },
+}
+`;
+
+exports[`kitchen-sink 3.2 document chained down to 3.0 > converts every 3.2-only construct and stays valid through both hops > v3.0 1`] = `
+{
+  "components": {
+    "parameters": {
+      "page": {
+        "in": "query",
+        "name": "page",
+        "schema": {
+          "type": "integer",
+        },
+      },
+    },
+    "securitySchemes": {
+      "deviceAuth": {
+        "flows": {},
+        "type": "oauth2",
+      },
+    },
+  },
+  "info": {
+    "title": "Kitchen Sink",
+    "version": "1.0.0",
+  },
+  "openapi": "3.0.4",
+  "paths": {
+    "/events": {
+      "get": {
+        "operationId": "streamEvents",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "object",
+                  },
+                  "type": "array",
+                },
+              },
+              "application/jsonl": {
+                "schema": {
+                  "items": {
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                      },
+                    },
+                    "type": "object",
+                  },
+                  "type": "array",
+                },
+              },
+            },
+            "description": "Event stream",
+          },
+          "204": {
+            "description": "",
+          },
+        },
+      },
+    },
+    "/search": {
+      "get": {
+        "operationId": "searchEvents",
+        "parameters": [
+          {
+            "examples": {
+              "kept": {
+                "value": "sid=1",
+              },
+              "linked": {
+                "externalValue": "https://example.com/session.json",
+              },
+              "promoted": {
+                "value": "sid=3",
+              },
+            },
+            "in": "cookie",
+            "name": "session",
+            "schema": {
+              "type": "string",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "string",
+                  },
+                  "type": "array",
+                },
+              },
+            },
+            "description": "Search results",
+          },
+        },
+      },
+    },
+  },
+  "security": [
+    {
+      "deviceAuth": [
+        "events:read",
+      ],
+    },
+  ],
+  "servers": [
+    {
+      "url": "https://api.example.com",
+    },
+  ],
+}
+`;
+
+exports[`kitchen-sink 3.2 document chained down to 3.0 > converts every 3.2-only construct and stays valid through both hops > v3.1 1`] = `
+{
+  "components": {
+    "parameters": {
+      "page": {
+        "in": "query",
+        "name": "page",
+        "schema": {
+          "type": "integer",
+        },
+      },
+    },
+    "securitySchemes": {
+      "deviceAuth": {
+        "flows": {},
+        "type": "oauth2",
+      },
+    },
+  },
+  "info": {
+    "title": "Kitchen Sink",
+    "version": "1.0.0",
+  },
+  "openapi": "3.1.2",
+  "paths": {
+    "/events": {
+      "get": {
+        "operationId": "streamEvents",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "object",
+                  },
+                  "type": "array",
+                },
+              },
+              "application/jsonl": {
+                "schema": {
+                  "items": {
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                      },
+                    },
+                    "type": "object",
+                  },
+                  "type": "array",
+                },
+              },
+            },
+            "description": "Event stream",
+          },
+          "204": {
+            "description": "",
+          },
+        },
+      },
+    },
+    "/search": {
+      "get": {
+        "operationId": "searchEvents",
+        "parameters": [
+          {
+            "examples": {
+              "kept": {
+                "value": "sid=1",
+              },
+              "linked": {
+                "externalValue": "https://example.com/session.json",
+              },
+              "promoted": {
+                "value": "sid=3",
+              },
+            },
+            "in": "cookie",
+            "name": "session",
+            "schema": {
+              "type": "string",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "string",
+                  },
+                  "type": "array",
+                },
+              },
+            },
+            "description": "Search results",
+          },
+        },
+      },
+    },
+  },
+  "security": [
+    {
+      "deviceAuth": [
+        "events:read",
+      ],
+    },
+  ],
+  "servers": [
+    {
+      "url": "https://api.example.com",
+    },
+  ],
+}
+`;
