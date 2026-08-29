@@ -31,7 +31,7 @@
   },
   "lint-staged": {
     "*.{js,jsx,ts,tsx,json,jsonc,css,scss,md,mdx}": [
-      "pnpm run lint:fix --no-error-on-unmatched-pattern"
+      "pnpm run lint:fix"
     ]
   },
   "devEngines": {
