@@ -11,7 +11,7 @@
     "lint:check": "ultracite check",
     "lint:fix": "ultracite fix",
     "repo:fix": "sherif --fix",
-    "sync:sponsors": "node scripts/sync-sponsors.ts"
+    "sync:sponsors": "node scripts/sync-sponsors.ts && git ls-files --modified --others --exclude-standard | xargs -r pnpm run lint:fix"
   },
   "devDependencies": {
     "@types/node": "^26.4.0",
@@ -21,8 +21,9 @@
     "oxlint": "^1.80.0",
     "sherif": "^1.13.0",
     "simple-git-hooks": "^2.13.1",
-    "typescript": "^7.0.2",
+    "typescript": "^6.0.3",
     "ultracite": "7.10.7",
+    "unbuild": "^3.6.1",
     "vitest": "^4.1.11"
   },
   "simple-git-hooks": {

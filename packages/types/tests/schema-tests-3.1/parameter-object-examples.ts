@@ -1,0 +1,95 @@
+/* oxlint-disable sort-keys, unicorn/no-thenable */
+// Generated from https://github.com/OAI/OpenAPI-Specification/tree/v3.1-dev/tests/schema/pass/parameter-object-examples.yaml
+// Do not edit by hand; regenerate instead.
+import type { OpenAPIObject } from "../../src/v3.1";
+
+export const doc = {
+  openapi: "3.1.0",
+  info: {
+    title: "API",
+    version: "1.0.0",
+  },
+  paths: {
+    "/user/{username}": {
+      parameters: [
+        {
+          name: "token",
+          in: "header",
+          description: "token to be passed as a header",
+          required: true,
+          explode: false,
+          schema: {
+            type: "array",
+            items: {
+              type: "integer",
+              format: "int64",
+            },
+          },
+          style: "simple",
+        },
+        {
+          name: "usernames",
+          in: "path",
+          description: "usernames to fetch",
+          required: true,
+          explode: false,
+          schema: {
+            type: "array",
+          },
+        },
+        {
+          name: "id",
+          in: "query",
+          description: "IDs of the object to fetch",
+          required: false,
+          schema: {
+            type: "array",
+            items: {
+              type: "string",
+            },
+          },
+          style: "form",
+          explode: true,
+        },
+        {
+          in: "query",
+          name: "freeForm",
+          schema: {
+            type: "object",
+            additionalProperties: {
+              type: "integer",
+            },
+          },
+          style: "form",
+        },
+        {
+          in: "query",
+          name: "coordinates",
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["lat", "long"],
+                properties: {
+                  lat: {
+                    type: "number",
+                  },
+                  long: {
+                    type: "number",
+                  },
+                },
+              },
+            },
+          },
+        },
+        {
+          in: "cookie",
+          name: "my_cookie1",
+          style: "form",
+          explode: false,
+          schema: {},
+        },
+      ],
+    },
+  },
+} satisfies OpenAPIObject;
