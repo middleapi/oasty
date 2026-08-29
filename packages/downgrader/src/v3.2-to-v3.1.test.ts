@@ -1944,3 +1944,242 @@ describe("malformed content maps", () => {
     });
   });
 });
+
+describe("parameters and headers losing their entire content", () => {
+  it("removes a parameter whose only content entry could not be inlined", () => {
+    const result = downgradeSpecV32ToV31(
+      asSpec({
+        openapi: "3.2.0",
+        paths: {
+          "/a": {
+            get: {
+              parameters: [
+                {
+                  content: {
+                    "application/json": {
+                      $ref: "#/components/mediaTypes/Missing",
+                    },
+                  },
+                  in: "query",
+                  name: "q",
+                },
+                { in: "query", name: "keep", schema: {} },
+              ],
+              responses: {},
+            },
+          },
+        },
+      })
+    );
+    expect(result).toEqual({
+      openapi: "3.1.2",
+      paths: {
+        "/a": {
+          get: {
+            parameters: [{ in: "query", name: "keep", schema: {} }],
+            responses: {},
+          },
+        },
+      },
+    });
+  });
+
+  it("keeps a parameter when part of its content could be inlined", () => {
+    const result = downgradeSpecV32ToV31(
+      asSpec({
+        components: { mediaTypes: { Known: { example: 1 } } },
+        openapi: "3.2.0",
+        paths: {
+          "/a": {
+            get: {
+              parameters: [
+                {
+                  content: {
+                    "application/json": {
+                      $ref: "#/components/mediaTypes/Missing",
+                    },
+                    "application/xml": {
+                      $ref: "#/components/mediaTypes/Known",
+                    },
+                  },
+                  in: "query",
+                  name: "q",
+                },
+              ],
+              responses: {},
+            },
+          },
+        },
+      })
+    );
+    expect(result).toEqual({
+      components: {},
+      openapi: "3.1.2",
+      paths: {
+        "/a": {
+          get: {
+            parameters: [
+              {
+                content: { "application/xml": { example: 1 } },
+                in: "query",
+                name: "q",
+              },
+            ],
+            responses: {},
+          },
+        },
+      },
+    });
+  });
+
+  it("removes headers and component parameters whose entire content could not be inlined", () => {
+    const result = downgradeSpecV32ToV31(
+      asSpec({
+        components: {
+          headers: {
+            Broken: {
+              content: {
+                "text/plain": { $ref: "#/components/mediaTypes/Missing" },
+              },
+            },
+            Keep: { schema: {} },
+          },
+          parameters: {
+            Broken: {
+              content: {
+                "text/plain": { $ref: "#/components/mediaTypes/Missing" },
+              },
+              in: "query",
+              name: "q",
+            },
+          },
+        },
+        openapi: "3.2.0",
+        paths: {
+          "/a": {
+            get: {
+              responses: {
+                "200": {
+                  description: "ok",
+                  headers: {
+                    "X-Broken": {
+                      content: {
+                        "text/plain": {
+                          $ref: "#/components/mediaTypes/Missing",
+                        },
+                      },
+                    },
+                    "X-Keep": { schema: {} },
+                  },
+                },
+              },
+            },
+          },
+        },
+      })
+    );
+    expect(result).toEqual({
+      components: {
+        headers: { Keep: { schema: {} } },
+        parameters: {},
+      },
+      openapi: "3.1.2",
+      paths: {
+        "/a": {
+          get: {
+            responses: {
+              "200": {
+                description: "ok",
+                headers: { "X-Keep": { schema: {} } },
+              },
+            },
+          },
+        },
+      },
+    });
+  });
+});
+
+describe("querystring reference alias chains", () => {
+  it("removes aliases of removed querystring parameters and references to them", () => {
+    const result = downgradeSpecV32ToV31(
+      asSpec({
+        components: {
+          parameters: {
+            Alias: { $ref: "#/components/parameters/Qs" },
+            AliasOfAlias: { $ref: "#/components/parameters/Alias" },
+            Keep: { in: "query", name: "k", schema: {} },
+            Qs: {
+              content: { "application/x-www-form-urlencoded": { schema: {} } },
+              in: "querystring",
+              name: "filter",
+            },
+          },
+        },
+        openapi: "3.2.0",
+        paths: {
+          "/a": {
+            get: {
+              parameters: [
+                { $ref: "#/components/parameters/AliasOfAlias" },
+                { $ref: "#/components/parameters/Keep" },
+              ],
+              responses: {},
+            },
+          },
+        },
+      })
+    );
+    expect(result).toEqual({
+      components: {
+        parameters: { Keep: { in: "query", name: "k", schema: {} } },
+      },
+      openapi: "3.1.2",
+      paths: {
+        "/a": {
+          get: {
+            parameters: [{ $ref: "#/components/parameters/Keep" }],
+            responses: {},
+          },
+        },
+      },
+    });
+  });
+});
+
+describe("deep documents", () => {
+  it("converts deeply nested schemas without throwing", () => {
+    let deep = asSchema({ type: "string" });
+    for (let index = 0; index < 1000; index += 1) {
+      deep = asSchema({ items: deep, type: "array" });
+    }
+    expect(() => downgradeSchemaV32ToV31(deep)).not.toThrow();
+  });
+});
+
+describe("malformed header maps", () => {
+  it("clones a non-object headers value through", () => {
+    const result = downgradeSpecV32ToV31(
+      asSpec({
+        openapi: "3.2.0",
+        paths: {
+          "/a": {
+            get: {
+              responses: { "200": { description: "ok", headers: "junk" } },
+            },
+          },
+        },
+      })
+    );
+    expect(result).toEqual({
+      openapi: "3.1.2",
+      paths: {
+        "/a": {
+          get: {
+            responses: { "200": { description: "ok", headers: "junk" } },
+          },
+        },
+      },
+    });
+  });
+});

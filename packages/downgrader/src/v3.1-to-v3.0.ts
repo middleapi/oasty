@@ -4,9 +4,10 @@
  * Converts OpenAPI 3.1 documents and schemas to OpenAPI 3.0 (targeting the
  * latest patch release, 3.0.4).
  *
- * The conversion never throws: parts that do not match the expected shape are
- * deep-copied through unchanged, and existing specification extensions
- * (`x-` keys) as well as unknown keys are always preserved. Constructs 3.0
+ * The conversion never throws on JSON-shaped (acyclic) input: parts that do
+ * not match the expected shape are deep-copied through unchanged, and
+ * existing specification extensions (`x-` keys) as well as unknown keys are
+ * always preserved. Constructs 3.0
  * cannot express are converted where an equivalent exists and removed
  * otherwise — the converter never invents `x-` keys of its own:
  *
@@ -55,8 +56,11 @@ const HTTP_METHODS = new Set([
 ]);
 
 /**
- * JSON Schema keywords with no OpenAPI 3.0 equivalent. Dropping them only
- * loosens validation, which is the safe direction for a downgrade.
+ * JSON Schema keywords with no OpenAPI 3.0 equivalent. In positive schema
+ * positions, dropping them only loosens validation — the safe direction for
+ * a downgrade. Inside `not` (where loosening the operand tightens the
+ * whole) or between `oneOf` branches (where loosening one branch can break
+ * exclusivity) the semantics can shift; see the README's known limitations.
  */
 const DROPPED_SCHEMA_KEYWORDS = new Set([
   "$anchor",
@@ -178,6 +182,11 @@ const convertType = (schema: UnknownRecord, out: UnknownRecord): void => {
   }
   if (Array.isArray(type)) {
     const types = [...new Set(type.filter((item) => typeof item === "string"))];
+    if (types.length === 0 && type.length > 0) {
+      // Only malformed entries: pass the array through unchanged.
+      setKey(out, "type", deepClone(type));
+      return;
+    }
     applyTypes(types, schema, out);
     return;
   }
@@ -320,7 +329,7 @@ const convertSubschemaKeyword = (
   out: UnknownRecord,
   key: string,
   value: unknown,
-  hasPrefixItems: boolean
+  schema: UnknownRecord
 ): boolean => {
   switch (key) {
     case "allOf":
@@ -332,7 +341,7 @@ const convertSubschemaKeyword = (
     case "items": {
       // With `prefixItems` dropped, a trailing `items` would wrongly
       // constrain every item, so it is dropped alongside.
-      if (!hasPrefixItems) {
+      if (!("prefixItems" in schema)) {
         setKey(out, key, convertSchema(value));
       }
       return true;
@@ -346,11 +355,16 @@ const convertSubschemaKeyword = (
       return true;
     }
     case "additionalProperties": {
-      setKey(
-        out,
-        key,
-        typeof value === "boolean" ? value : convertSchema(value)
-      );
+      // With `patternProperties` dropped, `additionalProperties` would also
+      // constrain the previously pattern-matched keys, so it is dropped
+      // alongside (removing a constraint is the safe direction).
+      if (!("patternProperties" in schema)) {
+        setKey(
+          out,
+          key,
+          typeof value === "boolean" ? value : convertSchema(value)
+        );
+      }
       return true;
     }
     default: {
@@ -361,7 +375,6 @@ const convertSubschemaKeyword = (
 
 const convertSchemaFields = (schema: UnknownRecord): UnknownRecord => {
   const out: UnknownRecord = {};
-  const hasPrefixItems = "prefixItems" in schema;
 
   for (const [key, value] of Object.entries(schema)) {
     if (key === "$ref") {
@@ -378,7 +391,7 @@ const convertSchemaFields = (schema: UnknownRecord): UnknownRecord => {
     ) {
       continue;
     }
-    if (convertSubschemaKeyword(out, key, value, hasPrefixItems)) {
+    if (convertSubschemaKeyword(out, key, value, schema)) {
       continue;
     }
     if (
@@ -389,8 +402,17 @@ const convertSchemaFields = (schema: UnknownRecord): UnknownRecord => {
       // accepted gracefully) pass through the default clone below.
       continue;
     }
-    if (key === "required" && Array.isArray(value) && value.length === 0) {
-      // 3.0 requires the array to be non-empty.
+    if (key === "required" && Array.isArray(value)) {
+      // 3.0 requires the array to be non-empty with unique entries.
+      const unique = [...new Set(value)];
+      if (unique.length > 0) {
+        setKey(out, key, deepClone(unique));
+      }
+      continue;
+    }
+    if (key === "enum" && Array.isArray(value) && value.length === 0) {
+      // 3.0 requires at least one enum entry; an empty enum only constrains,
+      // so removing it is the safe direction.
       continue;
     }
     if (key === "xml") {
@@ -427,6 +449,38 @@ export const downgradeSchemaV31ToV30 = <T = unknown>(
   return converted as OpenAPIV3_0.ReferenceObject | OpenAPIV3_0.SchemaObject<T>;
 };
 
+const SECURITY_SCHEMES_REF_PREFIX = "#/components/securitySchemes/";
+
+/**
+ * Resolves the declared `type` of a security scheme, following local
+ * reference aliases with cycle protection.
+ */
+const resolveSchemeType = (
+  name: string,
+  schemes: UnknownRecord,
+  seen: Set<string>
+): string | undefined => {
+  if (seen.has(name) || !Object.hasOwn(schemes, name)) {
+    return undefined;
+  }
+  const scheme = schemes[name];
+  if (!isRecord(scheme)) {
+    return undefined;
+  }
+  if (typeof scheme.type === "string") {
+    return scheme.type;
+  }
+  const ref = getRef(scheme);
+  if (ref !== undefined && ref.startsWith(SECURITY_SCHEMES_REF_PREFIX)) {
+    const target = ref.slice(SECURITY_SCHEMES_REF_PREFIX.length);
+    if (target !== "" && !target.includes("/")) {
+      seen.add(name);
+      return resolveSchemeType(target, schemes, seen);
+    }
+  }
+  return undefined;
+};
+
 const indexSecuritySchemes = (spec: UnknownRecord): SecuritySchemeIndex => {
   const types = new Map<string, string>();
   const mutualTls = new Set<string>();
@@ -434,10 +488,13 @@ const indexSecuritySchemes = (spec: UnknownRecord): SecuritySchemeIndex => {
     ? spec.components.securitySchemes
     : undefined;
   if (isRecord(schemes)) {
-    for (const [name, scheme] of Object.entries(schemes)) {
-      if (isRecord(scheme) && typeof scheme.type === "string") {
-        types.set(name, scheme.type);
-        if (scheme.type === "mutualTLS") {
+    for (const name of Object.keys(schemes)) {
+      const type = resolveSchemeType(name, schemes, new Set());
+      if (type !== undefined) {
+        types.set(name, type);
+        if (type === "mutualTLS") {
+          // Reference aliases of mutualTLS schemes are removed as well, so
+          // no dangling references survive.
           mutualTls.add(name);
         }
       }
@@ -485,6 +542,29 @@ const convertSecurityList = (
     out.push(converted);
   }
   return out;
+};
+
+/**
+ * Converts and attaches a `security` list. When mutualTLS removal empties a
+ * previously non-empty list, the key is omitted entirely: an explicit empty
+ * `security` array means "no security required" and, on an operation, would
+ * override the root declaration and silently make the operation public.
+ */
+const setSecurity = (
+  out: UnknownRecord,
+  value: unknown,
+  index: SecuritySchemeIndex
+): void => {
+  const converted = convertSecurityList(value, index);
+  if (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    Array.isArray(converted) &&
+    converted.length === 0
+  ) {
+    return;
+  }
+  setKey(out, "security", converted);
 };
 
 /** The SPDX `identifier` has no 3.0 equivalent. */
@@ -696,7 +776,7 @@ const convertOperation = (
         continue;
       }
       case "security": {
-        setKey(out, key, convertSecurityList(item, index));
+        setSecurity(out, item, index);
         continue;
       }
       default: {
@@ -874,7 +954,7 @@ const convertSpec = (spec: unknown): unknown => {
         continue;
       }
       case "security": {
-        setKey(out, "security", convertSecurityList(value, index));
+        setSecurity(out, value, index);
         continue;
       }
       default: {

@@ -4,31 +4,38 @@
  * Converts OpenAPI 3.2 documents and schemas to OpenAPI 3.1 (targeting the
  * latest patch release, 3.1.2).
  *
- * The conversion never throws: parts that do not match the expected shape are
- * deep-copied through unchanged, and existing specification extensions
- * (`x-` keys) as well as unknown keys are always preserved. Constructs 3.1
- * cannot express are converted where an equivalent exists and removed
- * otherwise — the converter never invents `x-` keys of its own:
+ * The conversion never throws on JSON-shaped (acyclic) input: parts that do
+ * not match the expected shape are deep-copied through unchanged, and
+ * existing specification extensions (`x-` keys) as well as unknown keys are
+ * always preserved. Constructs 3.1 cannot express are converted where an
+ * equivalent exists and removed otherwise — the converter never invents
+ * `x-` keys of its own:
  *
  * - Removed: `$self`, server `name`, tag `summary`/`parent`/`kind`, the
  *   `query` operation and `additionalOperations` of Path Items,
  *   `in: "querystring"` parameters (from parameter lists and
- *   `components.parameters`), `style: "cookie"` (the 3.1 default `form`
- *   applies), media type and encoding `prefixEncoding`/`itemEncoding` and
- *   nested `encoding`, OAuth `deviceAuthorization` flows, and security
- *   scheme `oauth2MetadataUrl` and `deprecated`.
+ *   `components.parameters`, following chains of reference aliases),
+ *   `style: "cookie"` (the 3.1 default `form` applies), media type and
+ *   encoding `prefixEncoding`/`itemEncoding` and nested `encoding`, OAuth
+ *   `deviceAuthorization` flows, and security scheme `oauth2MetadataUrl`
+ *   and `deprecated`.
  * - Converted: reusable `components.mediaTypes` are inlined at their `$ref`
  *   use sites (3.1 content maps allow no references) and the map itself is
- *   removed; media type `itemSchema` becomes
- *   `schema: { type: "array", items }` when no `schema` exists (the 3.2
- *   sequential media type data model) and is removed otherwise; example
- *   `dataValue`/`serializedValue` fill a free `value` slot (in that order);
- *   response `summary` becomes the `description` when none exists (3.1
- *   requires one, so `""` is synthesized as a last resort).
- * - Schema Objects pass through unchanged: 3.2 keeps the exact 3.1 schema
- *   dialect, and JSON Schema allows arbitrary extra keywords, so the
- *   3.2-only OAS vocabulary fields (discriminator `defaultMapping`, XML
- *   `nodeType`) are legal to keep as-is.
+ *   removed; content entries whose reference cannot be inlined are removed,
+ *   and a parameter or header losing its entire `content` that way is
+ *   removed with it (3.1 requires exactly one entry there); media type
+ *   `itemSchema` becomes `schema: { type: "array", items }` when no
+ *   `schema` exists (the 3.2 sequential media type data model) and is
+ *   removed otherwise; example `dataValue`/`serializedValue` fill a free
+ *   `value` slot (in that order); response `summary` becomes the
+ *   `description` when none exists (3.1 requires one, so `""` is
+ *   synthesized as a last resort).
+ * - Schema Objects pass through unchanged: the 3.2 Schema Object keyword
+ *   set is identical to 3.1's (3.2 defines its own dialect URI, but only
+ *   the OAS base vocabulary gained fields), and JSON Schema allows
+ *   arbitrary extra keywords, so the 3.2-only fields (discriminator
+ *   `defaultMapping`, XML `nodeType`) legally ride along as extra keys —
+ *   3.1 tooling will not act on them.
  *
  * @see {@link https://spec.openapis.org/oas/v3.2.0.html}
  * @see {@link https://spec.openapis.org/oas/v3.1.2.html}
@@ -69,6 +76,9 @@ const DROPPED_FLOWS_KEYS = new Set(["deviceAuthorization"]);
 /** Marks a content-map entry whose reference cannot be inlined. */
 const UNRESOLVED_MEDIA_TYPE = Symbol("unresolved media type");
 
+/** Marks a parameter or header whose entire `content` could not be inlined. */
+const DROPPED_PARAMETER = Symbol("dropped parameter");
+
 interface Context {
   /** The raw `components.mediaTypes` map, used to inline references. */
   mediaTypes: UnknownRecord | undefined;
@@ -91,10 +101,12 @@ const parseMediaTypeName = (ref: string): string | undefined => {
 
 /**
  * Converts an OpenAPI 3.2 Schema Object to its OpenAPI 3.1 form: a deep
- * clone. 3.2 keeps the exact 3.1 schema dialect, and JSON Schema allows
- * arbitrary extra keywords without an `x-` prefix, so even the 3.2-only OAS
- * vocabulary fields (discriminator `defaultMapping`, XML `nodeType`) are
- * legal to keep as-is.
+ * clone. The 3.2 Schema Object keyword set is identical to 3.1's (3.2
+ * defines its own dialect URI, but only the OAS base vocabulary gained
+ * fields), and JSON Schema allows arbitrary extra keywords without an `x-`
+ * prefix, so even the 3.2-only fields (discriminator `defaultMapping`, XML
+ * `nodeType`) are legal to keep as-is — though 3.1 tooling will not act on
+ * them.
  */
 export const downgradeSchemaV32ToV31 = <T = unknown>(
   schema: OpenAPIV3_2.SchemaObject<T>
@@ -241,12 +253,23 @@ const convertParameterOrHeader = (
       }
     }
   }
+  if (
+    isRecord(value.content) &&
+    Object.keys(value.content).length > 0 &&
+    isRecord(out.content) &&
+    Object.keys(out.content).length === 0
+  ) {
+    // 3.1 requires exactly one content entry on parameters and headers, so
+    // one whose entire content could not be inlined is removed.
+    return DROPPED_PARAMETER;
+  }
   return out;
 };
 
 /**
- * Converts a parameter list, removing 3.2-only `querystring` parameters and
- * references to removed querystring component parameters.
+ * Converts a parameter list, removing 3.2-only `querystring` parameters,
+ * references to removed querystring component parameters, and parameters
+ * whose entire `content` could not be inlined.
  */
 const convertParameterList = (value: unknown, context: Context): unknown => {
   if (!Array.isArray(value)) {
@@ -257,7 +280,26 @@ const convertParameterList = (value: unknown, context: Context): unknown => {
       (item) =>
         !(isQuerystringParameter(item) || isRemovedParameterRef(item, context))
     )
-    .map((item) => convertRefOr(item, context, convertParameterOrHeader));
+    .map((item) => convertRefOr(item, context, convertParameterOrHeader))
+    .filter((item) => item !== DROPPED_PARAMETER);
+};
+
+/**
+ * Converts a map of Header Objects, removing headers whose entire `content`
+ * could not be inlined.
+ */
+const convertHeaderMap = (value: unknown, context: Context): unknown => {
+  if (!isRecord(value)) {
+    return deepClone(value);
+  }
+  const out: UnknownRecord = {};
+  for (const [name, item] of Object.entries(value)) {
+    const converted = convertRefOr(item, context, convertParameterOrHeader);
+    if (converted !== DROPPED_PARAMETER) {
+      setKey(out, name, converted);
+    }
+  }
+  return out;
 };
 
 const convertEncoding = (value: unknown, context: Context): unknown => {
@@ -268,13 +310,7 @@ const convertEncoding = (value: unknown, context: Context): unknown => {
   for (const [key, item] of Object.entries(value)) {
     switch (key) {
       case "headers": {
-        setKey(
-          out,
-          key,
-          mapRecord(item, (entry) =>
-            convertRefOr(entry, context, convertParameterOrHeader)
-          )
-        );
+        setKey(out, key, convertHeaderMap(item, context));
         continue;
       }
       // Nested and positional encoding are new in 3.2.
@@ -407,13 +443,7 @@ const convertResponse = (value: unknown, context: Context): unknown => {
         continue;
       }
       case "headers": {
-        setKey(
-          out,
-          key,
-          mapRecord(item, (entry) =>
-            convertRefOr(entry, context, convertParameterOrHeader)
-          )
-        );
+        setKey(out, key, convertHeaderMap(item, context));
         continue;
       }
       case "content": {
@@ -547,10 +577,12 @@ const convertParameterComponents = (
   }
   const out: UnknownRecord = {};
   for (const [name, item] of Object.entries(value)) {
-    if (
-      !(isQuerystringParameter(item) || isRemovedParameterRef(item, context))
-    ) {
-      setKey(out, name, convertRefOr(item, context, convertParameterOrHeader));
+    if (isQuerystringParameter(item) || isRemovedParameterRef(item, context)) {
+      continue;
+    }
+    const converted = convertRefOr(item, context, convertParameterOrHeader);
+    if (converted !== DROPPED_PARAMETER) {
+      setKey(out, name, converted);
     }
   }
   return out;
@@ -578,13 +610,7 @@ const convertComponents = (value: unknown, context: Context): unknown => {
         continue;
       }
       case "headers": {
-        setKey(
-          out,
-          key,
-          mapRecord(item, (entry) =>
-            convertRefOr(entry, context, convertParameterOrHeader)
-          )
-        );
+        setKey(out, key, convertHeaderMap(item, context));
         continue;
       }
       case "examples": {
@@ -659,10 +685,27 @@ const convertComponents = (value: unknown, context: Context): unknown => {
 const indexRemovedParameterRefs = (components: unknown): Set<string> => {
   const removed = new Set<string>();
   const parameters = isRecord(components) ? components.parameters : undefined;
-  if (isRecord(parameters)) {
-    for (const [name, parameter] of Object.entries(parameters)) {
-      if (isQuerystringParameter(parameter)) {
-        removed.add(PARAMETERS_REF_PREFIX + name);
+  if (!isRecord(parameters)) {
+    return removed;
+  }
+  const entries = Object.entries(parameters);
+  // Iterated to a fixpoint so chains of reference aliases to removed
+  // querystring entries are removed with their targets.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [name, parameter] of entries) {
+      const selfRef = PARAMETERS_REF_PREFIX + name;
+      if (removed.has(selfRef)) {
+        continue;
+      }
+      const target = getRef(parameter);
+      if (
+        isQuerystringParameter(parameter) ||
+        (target !== undefined && removed.has(target))
+      ) {
+        removed.add(selfRef);
+        changed = true;
       }
     }
   }

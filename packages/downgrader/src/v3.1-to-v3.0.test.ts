@@ -155,7 +155,9 @@ describe("downgradeSpecV31ToV30", () => {
           openapi: "3.1.0",
           paths: {
             "/a": { get: { summary: "s" } },
-            "x-note": { keep: true },
+            // Path-item-shaped on purpose: cloning must NOT convert it, so
+            // no responses may be synthesized inside.
+            "x-note": { get: { summary: "s" } },
           },
         })
       ).toEqual({
@@ -168,7 +170,7 @@ describe("downgradeSpecV31ToV30", () => {
               summary: "s",
             },
           },
-          "x-note": { keep: true },
+          "x-note": { get: { summary: "s" } },
         },
       });
     });
@@ -950,7 +952,9 @@ describe("downgradeSchemaV31ToV30", () => {
       expect(
         downgradeSchemaV31ToV30(asSchema({ type: ["string", 42] }))
       ).toEqual({ type: "string" });
-      expect(downgradeSchemaV31ToV30(asSchema({ type: [42] }))).toEqual({});
+      expect(downgradeSchemaV31ToV30(asSchema({ type: [42] }))).toEqual({
+        type: [42],
+      });
     });
 
     it("drops an empty type array", () => {
@@ -1351,7 +1355,7 @@ describe("graceful handling of malformed nested objects", () => {
         callbacks: {
           junkCallback: 42,
           realCallback: {
-            "x-note": 1,
+            "x-note": { "{$expr}": { get: {} } },
             "{$request.body#/url}": { post: { summary: "s" } },
           },
         },
@@ -1362,7 +1366,13 @@ describe("graceful handling of malformed nested objects", () => {
       paths: {
         "/a": {
           get: {
-            callbacks: { inline: { expr: { get: {} }, "x-k": 2 }, junk: 7 },
+            callbacks: {
+              inline: {
+                expr: { get: {} },
+                "x-k": { expr: { get: {} } },
+              },
+              junk: 7,
+            },
             responses: {},
           },
         },
@@ -1373,7 +1383,7 @@ describe("graceful handling of malformed nested objects", () => {
         callbacks: {
           junkCallback: 42,
           realCallback: {
-            "x-note": 1,
+            "x-note": { "{$expr}": { get: {} } },
             "{$request.body#/url}": {
               post: {
                 responses: { default: { description: "" } },
@@ -1392,7 +1402,7 @@ describe("graceful handling of malformed nested objects", () => {
             callbacks: {
               inline: {
                 expr: { get: { responses: { default: { description: "" } } } },
-                "x-k": 2,
+                "x-k": { expr: { get: {} } },
               },
               junk: 7,
             },
@@ -1528,5 +1538,153 @@ describe("type unions containing array", () => {
       ],
       items: { type: "integer" },
     });
+  });
+});
+
+describe("patternProperties sibling handling", () => {
+  it("drops additionalProperties together with patternProperties", () => {
+    expect(
+      downgradeSchemaV31ToV30(
+        asSchema({
+          additionalProperties: false,
+          patternProperties: { "^x-": {} },
+          properties: { name: { type: "string" } },
+          type: "object",
+        })
+      )
+    ).toEqual({
+      properties: { name: { type: "string" } },
+      type: "object",
+    });
+  });
+
+  it("drops schema-valued additionalProperties together with patternProperties", () => {
+    expect(
+      downgradeSchemaV31ToV30(
+        asSchema({
+          additionalProperties: { type: "integer" },
+          patternProperties: { "^x-": {} },
+          type: "object",
+        })
+      )
+    ).toEqual({ type: "object" });
+  });
+});
+
+describe("3.0 enum and required constraints", () => {
+  it("removes an empty enum", () => {
+    expect(
+      downgradeSchemaV31ToV30(asSchema({ enum: [], type: "string" }))
+    ).toEqual({ type: "string" });
+  });
+
+  it("deduplicates required entries", () => {
+    expect(
+      downgradeSchemaV31ToV30(
+        asSchema({ required: ["a", "b", "a"], type: "object" })
+      )
+    ).toEqual({ required: ["a", "b"], type: "object" });
+  });
+});
+
+describe("mutualTLS reference aliases", () => {
+  it("removes reference aliases of mutualTLS schemes and their requirements", () => {
+    const result = downgradeSpecV31ToV30(
+      asSpec({
+        components: {
+          securitySchemes: {
+            api: { in: "header", name: "k", type: "apiKey" },
+            clientCert: { $ref: "#/components/securitySchemes/mtlsBase" },
+            mtlsBase: { type: "mutualTLS" },
+          },
+        },
+        info,
+        openapi: "3.1.0",
+        paths: {},
+        security: [{ clientCert: [] }, { api: [] }],
+      })
+    );
+    expect(result).toEqual({
+      components: {
+        securitySchemes: { api: { in: "header", name: "k", type: "apiKey" } },
+      },
+      info,
+      openapi: "3.0.4",
+      paths: {},
+      security: [{ api: [] }],
+    });
+  });
+
+  it("survives cyclic and dangling security scheme aliases", () => {
+    const result = downgradeSpecV31ToV30(
+      asSpec({
+        components: {
+          securitySchemes: {
+            dangling: { $ref: "#/components/securitySchemes/missing" },
+            external: { $ref: "https://example.com/s.json#/schemes/a" },
+            junk: 42,
+            nested: { $ref: "#/components/securitySchemes/a/b" },
+            ping: { $ref: "#/components/securitySchemes/pong" },
+            pong: { $ref: "#/components/securitySchemes/ping" },
+          },
+        },
+        info,
+        openapi: "3.1.0",
+        paths: {},
+      })
+    );
+    expect(result.components?.securitySchemes).toEqual({
+      dangling: { $ref: "#/components/securitySchemes/missing" },
+      external: { $ref: "https://example.com/s.json#/schemes/a" },
+      junk: 42,
+      nested: { $ref: "#/components/securitySchemes/a/b" },
+      ping: { $ref: "#/components/securitySchemes/pong" },
+      pong: { $ref: "#/components/securitySchemes/ping" },
+    });
+  });
+});
+
+describe("security lists emptied by mutualTLS removal", () => {
+  it("omits an operation security list that removal emptied", () => {
+    const result = downgradeSpecV31ToV30(
+      asSpec({
+        components: { securitySchemes: { mtls: { type: "mutualTLS" } } },
+        info,
+        openapi: "3.1.0",
+        paths: {
+          "/admin": {
+            get: { responses: {}, security: [{ mtls: [] }] },
+          },
+        },
+        security: [{ mtls: [] }],
+      })
+    );
+    const operation = result.paths?.["/admin"]?.get;
+    expect(operation).toEqual({ responses: {} });
+    expect(operation).not.toHaveProperty("security");
+    expect(result).not.toHaveProperty("security");
+  });
+
+  it("keeps an explicitly empty security list", () => {
+    const result = downgradeSpecV31ToV30(
+      asSpec({
+        info,
+        openapi: "3.1.0",
+        paths: { "/a": { get: { responses: {}, security: [] } } },
+        security: [],
+      })
+    );
+    expect(result.paths?.["/a"]?.get?.security).toEqual([]);
+    expect(result.security).toEqual([]);
+  });
+});
+
+describe("deep documents", () => {
+  it("converts deeply nested schemas without throwing", () => {
+    let deep = asSchema({ type: "string" });
+    for (let index = 0; index < 1000; index += 1) {
+      deep = asSchema({ items: deep, type: "array" });
+    }
+    expect(() => downgradeSchemaV31ToV30(deep)).not.toThrow();
   });
 });

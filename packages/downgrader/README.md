@@ -2,7 +2,7 @@
 
 Downgrade [OpenAPI Specification](https://spec.openapis.org/) documents one minor version at a time: 3.2 → 3.1 and 3.1 → 3.0. Each converter works on an entire document or on a single Schema Object.
 
-- **Never throws**: malformed parts are deep-copied through unchanged instead of failing the whole conversion.
+- **Never throws on JSON-shaped input**: malformed parts are deep-copied through unchanged instead of failing the whole conversion. Cyclic object graphs (e.g. the output of a `$ref` dereferencer) and pathologically deep nesting are out of scope — feed the converters what `JSON.parse` could have produced.
 - **Never mutates**: the input document is left untouched.
 - **Extension-preserving, never extension-inventing**: existing `x-` keys and unknown keys always survive, while constructs the target version cannot express are converted where an equivalent exists and removed otherwise.
 
@@ -29,20 +29,20 @@ const schema = downgradeSchemaV31ToV30({ type: ["string", "null"] });
 
 ## 3.2 → 3.1
 
-Schema Objects pass through unchanged: 3.2 keeps the exact 3.1 schema dialect, and JSON Schema allows arbitrary extra keywords without an `x-` prefix, so even the 3.2-only OAS vocabulary fields (discriminator `defaultMapping`, XML `nodeType`) are legal to keep as-is.
+Schema Objects pass through unchanged: the 3.2 Schema Object keyword set is identical to 3.1's (3.2 defines its own dialect URI, but only the OAS base vocabulary gained fields), and JSON Schema allows arbitrary extra keywords without an `x-` prefix, so the 3.2-only fields (discriminator `defaultMapping`, XML `nodeType`) legally ride along as extra keys. Note the semantic cost: 3.1 tooling will not act on them — in particular a `defaultMapping` fallback stops taking effect (`nodeType` is recovered on the 3.1 → 3.0 hop).
 
 Converted:
 
 | 3.2 construct | 3.1 result |
 | --- | --- |
 | `openapi: 3.2.x` | `openapi: 3.1.2` |
-| `components.mediaTypes` and content-map `$ref`s to them | references inlined, the component map removed; content entries whose reference cannot be inlined (external, unknown, or cyclic targets) are removed, as 3.1 content maps cannot hold references |
+| `components.mediaTypes` and content-map `$ref`s to them | references inlined, the component map removed; content entries whose reference cannot be inlined (external, unknown, or cyclic targets) are removed, as 3.1 content maps cannot hold references — a parameter or header losing its entire `content` that way is removed with it (3.1 requires exactly one entry there) |
 | Media type `itemSchema` without a sibling `schema` | `schema: { type: "array", items: … }` (the 3.2 sequential media type data model) |
 | Response `summary` when no `description` exists | promoted to `description` (required in 3.1, so `""` is synthesized as a last resort) |
 | Example `dataValue` / `serializedValue` when `value` and `externalValue` are absent | promoted to `value` (in that order) |
 | Parameter `style: "cookie"` | removed, letting the 3.1 default `form` apply |
 
-Removed (no 3.1 equivalent): `$self`, server `name`, tag `summary`/`parent`/`kind`, the `query` operation and `additionalOperations` of Path Items, `in: "querystring"` parameters (from parameter lists and `components.parameters`, together with references to the removed component entries), `allowReserved` on non-query parameters, media type `description`, media type / encoding `prefixEncoding`, `itemEncoding`, and nested `encoding`, a media type `itemSchema` beside an existing `schema`, response `summary` beside an existing `description`, OAuth `deviceAuthorization` flows, and security scheme `oauth2MetadataUrl` and `deprecated`.
+Removed (no 3.1 equivalent): `$self`, server `name`, tag `summary`/`parent`/`kind`, the `query` operation and `additionalOperations` of Path Items, `in: "querystring"` parameters (from parameter lists and `components.parameters`, together with references to the removed component entries, following chains of reference aliases), `allowReserved` on non-query parameters, media type `description`, media type / encoding `prefixEncoding`, `itemEncoding`, and nested `encoding`, a media type `itemSchema` beside an existing `schema`, response `summary` beside an existing `description`, OAuth `deviceAuthorization` flows, and security scheme `oauth2MetadataUrl` and `deprecated`.
 
 Known limitations: security requirements using URI keys and `$self`-relative reference resolution are passed through unchanged.
 
@@ -58,7 +58,7 @@ Converted:
 | Reference `summary` / `description` overrides | removed (3.0 references stand alone) |
 | Security requirement roles on non-OAuth schemes | emptied (`[]`) |
 
-Removed (no 3.0 equivalent): `webhooks`, `components.pathItems` (local `$ref`s pointing at it are left untouched and will dangle), `jsonSchemaDialect`, `info.summary`, `license.identifier`, and `mutualTLS` security schemes — their names are stripped from every security requirement, and requirements that referenced only such schemes are removed.
+Removed (no 3.0 equivalent): `webhooks`, `components.pathItems` (local `$ref`s pointing at it are left untouched and will dangle), `jsonSchemaDialect`, `info.summary`, `license.identifier`, and `mutualTLS` security schemes (reference aliases to them included) — their names are stripped from every security requirement, requirements that referenced only such schemes are removed, and a `security` list emptied that way is removed entirely, since an explicit empty list means "no security required" and would make an operation public.
 
 Schema Objects:
 
@@ -67,6 +67,7 @@ Schema Objects:
 | `true` / `false` boolean schemas | `{}` / `{ not: {} }` |
 | `$ref` with sibling keywords | siblings kept, `$ref` wrapped into `allOf` |
 | `type: ["T", "null"]` | `type: "T"` plus `nullable: true` |
+| `enum: []` / duplicate `required` entries | `enum` removed / `required` deduplicated (3.0 requires a non-empty `enum` and unique `required`) |
 | `type: "null"` | `nullable: true` plus `enum: [null]` |
 | `type` with several non-null entries | `anyOf` of single-type schemas |
 | `const` | single-value `enum` |
@@ -76,9 +77,9 @@ Schema Objects:
 | `contentMediaType: application/octet-stream` | `format: binary` |
 | `type: "array"` without `items` | `items: {}` is added (required in 3.0) |
 | XML `nodeType` (carried over from a 3.2 chain) | `attribute: true` / `wrapped: true` where expressible, then removed (3.0 forbids unknown XML Object fields) |
-| `$schema`, `$id`, `$defs`, `$anchor`, `$dynamicRef`/`$dynamicAnchor`, `$vocabulary`, `$comment`, `if`/`then`/`else`, `dependentSchemas`/`dependentRequired`, `prefixItems` (and its trailing `items`), `contains`/`minContains`/`maxContains`, `patternProperties`, `propertyNames`, `unevaluatedItems`/`unevaluatedProperties`, `contentSchema` | removed — dropping these only loosens validation, which is the safe direction for a downgrade |
+| `$schema`, `$id`, `$defs`, `$anchor`, `$dynamicRef`/`$dynamicAnchor`, `$vocabulary`, `$comment`, `if`/`then`/`else`, `dependentSchemas`/`dependentRequired`, `prefixItems` (and its trailing `items`), `contains`/`minContains`/`maxContains`, `patternProperties` (and its sibling `additionalProperties`, whose meaning would otherwise tighten onto the pattern-matched keys), `propertyNames`, `unevaluatedItems`/`unevaluatedProperties`, `contentSchema` | removed — in positive schema positions dropping these only loosens validation, the safe direction for a downgrade |
 
-Known limitations: `$ref`s that point into dropped keywords (`#/…/$defs/…` pointers, `$anchor` targets, `$id`-based bases) will dangle — hoist reusable subschemas into `components.schemas` before downgrading. Arbitrary non-standard schema keywords are preserved per the extension-preserving contract, even though the official 3.0 schema forbids unknown Schema Object fields.
+Known limitations: `$ref`s that point into dropped keywords (`#/…/$defs/…` pointers, `$anchor` targets, `$id`-based bases) will dangle — hoist reusable subschemas into `components.schemas` before downgrading. Arbitrary non-standard schema keywords are preserved per the extension-preserving contract, even though the official 3.0 schema forbids unknown Schema Object fields. Dropping keywords inside `not` (where loosening the operand tightens the whole) or inside `oneOf` branches (where loosening one branch can break exclusivity) can shift what validates.
 
 ## Sponsors
 
