@@ -9,4 +9,5 @@ linkWorkspacePackages: true
 preferWorkspacePackages: true
 
 allowBuilds:
+  esbuild: true
   simple-git-hooks: false
