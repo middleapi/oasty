@@ -633,6 +633,15 @@ export interface RequestBodyObject extends SpecificationExtensions {
  */
 export interface MediaTypeObject extends SpecificationExtensions {
   /**
+   * A description of the media type. Absent from the 3.2.0 Fixed Fields
+   * table, but defined by the official OAS 3.2 JSON Schema
+   * (`$defs/media-type`).
+   *
+   * @see {@link https://spec.openapis.org/oas/3.2/schema/2025-09-17}
+   * @see {@link https://github.com/OAI/OpenAPI-Specification/pull/4728}
+   */
+  description?: string;
+  /**
    * A schema describing the complete content of the request, response,
    * parameter, or header.
    */
