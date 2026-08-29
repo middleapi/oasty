@@ -1,4 +1,4 @@
-import type { OpenAPIObject, SchemaObject } from "./v3.2";
+import type { MediaTypeObject, OpenAPIObject, SchemaObject } from "./v3.2";
 
 export const streamingApi = {
   $self: "https://example.com/openapi",
@@ -218,6 +218,11 @@ export const streamingApi = {
     { kind: "badge", name: "streaming", parent: "events" },
   ],
 } satisfies OpenAPIObject;
+
+export const describedMediaType = {
+  description: "Streaming sequence of JSON event representations",
+  itemSchema: { $ref: "#/components/schemas/Event" },
+} satisfies MediaTypeObject;
 
 export const wrongVersion = {
   info: { title: "API", version: "1.0.0" },
