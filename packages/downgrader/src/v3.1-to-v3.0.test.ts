@@ -1469,3 +1469,64 @@ describe("xml nodeType from chained 3.2 documents", () => {
     ).toEqual({ type: "string", xml: "junk" });
   });
 });
+
+describe("malformed schema values pass through the conversion triggers", () => {
+  it("passes a non-string $ref through unchanged", () => {
+    expect(downgradeSchemaV31ToV30(asSchema({ $ref: 123 }))).toEqual({
+      $ref: 123,
+    });
+    expect(
+      downgradeSchemaV31ToV30(asSchema({ $ref: 123, type: "string" }))
+    ).toEqual({ $ref: 123, type: "string" });
+  });
+
+  it("keeps a malformed allOf when a string $ref would otherwise be wrapped", () => {
+    expect(
+      downgradeSchemaV31ToV30(
+        asSchema({ $ref: "#/components/schemas/A", allOf: "junk" })
+      )
+    ).toEqual({ $ref: "#/components/schemas/A", allOf: "junk" });
+  });
+
+  it("keeps a malformed allOf when a type union would otherwise merge into it", () => {
+    expect(
+      downgradeSchemaV31ToV30(
+        asSchema({
+          allOf: "junk",
+          anyOf: [{ type: "string" }],
+          type: ["integer", "string"],
+        })
+      )
+    ).toEqual({
+      allOf: "junk",
+      anyOf: [{ type: "string" }],
+    });
+  });
+});
+
+describe("type unions containing array", () => {
+  it("gives synthesized array variants an empty items", () => {
+    expect(
+      downgradeSchemaV31ToV30(asSchema({ type: ["array", "string"] }))
+    ).toEqual({
+      anyOf: [{ items: {}, type: "array" }, { type: "string" }],
+    });
+  });
+
+  it("copies existing items into the synthesized array variant", () => {
+    expect(
+      downgradeSchemaV31ToV30(
+        asSchema({
+          items: { type: "integer" },
+          type: ["array", "string", "null"],
+        })
+      )
+    ).toEqual({
+      anyOf: [
+        { items: { type: "integer" }, nullable: true, type: "array" },
+        { nullable: true, type: "string" },
+      ],
+      items: { type: "integer" },
+    });
+  });
+});

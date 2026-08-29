@@ -586,11 +586,15 @@ describe("components.mediaTypes inlining", () => {
     });
   });
 
-  it("leaves self-referential media type reference chains as the original reference", () => {
+  it("removes content entries whose reference chain is cyclic", () => {
     const result = downgradeSpecV32ToV31(
       asSpec({
         components: {
-          mediaTypes: { Loop: { $ref: "#/components/mediaTypes/Loop" } },
+          mediaTypes: {
+            Loop: { $ref: "#/components/mediaTypes/Loop" },
+            Ping: { $ref: "#/components/mediaTypes/Pong" },
+            Pong: { $ref: "#/components/mediaTypes/Ping" },
+          },
         },
         openapi: "3.2.0",
         paths: {
@@ -600,6 +604,9 @@ describe("components.mediaTypes inlining", () => {
                 content: {
                   "application/json": {
                     $ref: "#/components/mediaTypes/Loop",
+                  },
+                  "application/xml": {
+                    $ref: "#/components/mediaTypes/Ping",
                   },
                 },
               },
@@ -615,11 +622,50 @@ describe("components.mediaTypes inlining", () => {
       paths: {
         "/a": {
           post: {
+            requestBody: { content: {} },
+            responses: {},
+          },
+        },
+      },
+    });
+  });
+
+  it("resolves long acyclic reference chains", () => {
+    const links = Array.from({ length: 40 }, (_unused, index) => [
+      `m${index}`,
+      { $ref: `#/components/mediaTypes/m${index + 1}` },
+    ]);
+    const mediaTypes = Object.fromEntries([
+      ...links,
+      ["m40", { schema: { type: "string" } }],
+    ]);
+    const result = downgradeSpecV32ToV31(
+      asSpec({
+        components: { mediaTypes },
+        openapi: "3.2.0",
+        paths: {
+          "/a": {
+            post: {
+              requestBody: {
+                content: {
+                  "application/json": { $ref: "#/components/mediaTypes/m0" },
+                },
+              },
+              responses: {},
+            },
+          },
+        },
+      })
+    );
+    expect(result).toEqual({
+      components: {},
+      openapi: "3.1.2",
+      paths: {
+        "/a": {
+          post: {
             requestBody: {
               content: {
-                "application/json": {
-                  $ref: "#/components/mediaTypes/Loop",
-                },
+                "application/json": { schema: { type: "string" } },
               },
             },
             responses: {},
@@ -629,17 +675,18 @@ describe("components.mediaTypes inlining", () => {
     });
   });
 
-  it("leaves external and unparseable references as-is", () => {
+  it("removes content entries with external and unparseable references", () => {
     const content = {
       "a/1": { $ref: "#/components/schemas/Foo" },
       "a/2": { $ref: "#/components/mediaTypes/nested/name" },
       "a/3": { $ref: "#/components/mediaTypes/" },
       "a/4": { $ref: "https://example.com/other.json#/mediaTypes/A" },
       "a/5": { $ref: "#/components/mediaTypes/Unknown" },
+      "a/6": { $ref: "#/components/mediaTypes/Known" },
     };
     const result = downgradeSpecV32ToV31(
       asSpec({
-        components: { mediaTypes: { Known: {} } },
+        components: { mediaTypes: { Known: { example: 1 } } },
         openapi: "3.2.0",
         paths: {
           "/a": {
@@ -653,40 +700,8 @@ describe("components.mediaTypes inlining", () => {
       openapi: "3.1.2",
       paths: {
         "/a": {
-          post: { requestBody: { content }, responses: {} },
-        },
-      },
-    });
-  });
-
-  it("leaves media type references as-is when components.mediaTypes is missing", () => {
-    const result = downgradeSpecV32ToV31(
-      asSpec({
-        openapi: "3.2.0",
-        paths: {
-          "/a": {
-            post: {
-              requestBody: {
-                content: {
-                  "application/json": { $ref: "#/components/mediaTypes/A" },
-                },
-              },
-              responses: {},
-            },
-          },
-        },
-      })
-    );
-    expect(result).toEqual({
-      openapi: "3.1.2",
-      paths: {
-        "/a": {
           post: {
-            requestBody: {
-              content: {
-                "application/json": { $ref: "#/components/mediaTypes/A" },
-              },
-            },
+            requestBody: { content: { "a/6": { example: 1 } } },
             responses: {},
           },
         },
@@ -694,17 +709,19 @@ describe("components.mediaTypes inlining", () => {
     });
   });
 
-  it("leaves media type references as-is when components.mediaTypes is not an object", () => {
+  it("does not resolve names through the prototype chain of the mediaTypes map", () => {
     const result = downgradeSpecV32ToV31(
       asSpec({
-        components: { mediaTypes: "junk" },
+        components: { mediaTypes: {} },
         openapi: "3.2.0",
         paths: {
           "/a": {
             post: {
               requestBody: {
                 content: {
-                  "application/json": { $ref: "#/components/mediaTypes/A" },
+                  "application/json": {
+                    $ref: "#/components/mediaTypes/hasOwnProperty",
+                  },
                 },
               },
               responses: {},
@@ -719,14 +736,46 @@ describe("components.mediaTypes inlining", () => {
       paths: {
         "/a": {
           post: {
-            requestBody: {
-              content: {
-                "application/json": { $ref: "#/components/mediaTypes/A" },
-              },
-            },
+            requestBody: { content: {} },
             responses: {},
           },
         },
+      },
+    });
+  });
+
+  it("removes media type references when components.mediaTypes is missing or malformed", () => {
+    const content = {
+      "application/json": { $ref: "#/components/mediaTypes/A" },
+    };
+    const withoutComponents = downgradeSpecV32ToV31(
+      asSpec({
+        openapi: "3.2.0",
+        paths: {
+          "/a": { post: { requestBody: { content }, responses: {} } },
+        },
+      })
+    );
+    expect(withoutComponents).toEqual({
+      openapi: "3.1.2",
+      paths: {
+        "/a": { post: { requestBody: { content: {} }, responses: {} } },
+      },
+    });
+    const withJunkMap = downgradeSpecV32ToV31(
+      asSpec({
+        components: { mediaTypes: "junk" },
+        openapi: "3.2.0",
+        paths: {
+          "/a": { post: { requestBody: { content }, responses: {} } },
+        },
+      })
+    );
+    expect(withJunkMap).toEqual({
+      components: {},
+      openapi: "3.1.2",
+      paths: {
+        "/a": { post: { requestBody: { content: {} }, responses: {} } },
       },
     });
   });
@@ -1512,9 +1561,7 @@ describe("components maps", () => {
           H: {},
           HRef: { $ref: "#/components/headers/H" },
         },
-        parameters: {
-          PRef: { $ref: "#/components/parameters/P" },
-        },
+        parameters: {},
         requestBodies: {
           B: {
             content: {
@@ -1828,6 +1875,72 @@ describe("parameter allowReserved", () => {
     expect(result).toEqual({
       components: { headers: { H: { allowReserved: true, schema: {} } } },
       openapi: "3.1.2",
+    });
+  });
+});
+
+describe("references to removed querystring parameters", () => {
+  it("removes list references to removed querystring component parameters and keeps others", () => {
+    const result = downgradeSpecV32ToV31(
+      asSpec({
+        components: {
+          parameters: {
+            Keep: { in: "query", name: "k", schema: {} },
+            QS: {
+              content: { "application/x-www-form-urlencoded": { schema: {} } },
+              in: "querystring",
+              name: "filter",
+            },
+          },
+        },
+        openapi: "3.2.0",
+        paths: {
+          "/a": {
+            get: {
+              parameters: [
+                { $ref: "#/components/parameters/QS" },
+                { $ref: "#/components/parameters/Keep" },
+              ],
+              responses: {},
+            },
+            parameters: [{ $ref: "#/components/parameters/QS" }],
+          },
+        },
+      })
+    );
+    expect(result).toEqual({
+      components: {
+        parameters: { Keep: { in: "query", name: "k", schema: {} } },
+      },
+      openapi: "3.1.2",
+      paths: {
+        "/a": {
+          get: {
+            parameters: [{ $ref: "#/components/parameters/Keep" }],
+            responses: {},
+          },
+          parameters: [],
+        },
+      },
+    });
+  });
+});
+
+describe("malformed content maps", () => {
+  it("clones a non-object content value through", () => {
+    const result = downgradeSpecV32ToV31(
+      asSpec({
+        openapi: "3.2.0",
+        paths: {
+          "/a": { post: { requestBody: { content: "junk" }, responses: {} } },
+        },
+      })
+    );
+    expect(result).toEqual({
+      openapi: "3.1.2",
+      paths: {
+        "/a": { post: { requestBody: { content: "junk" }, responses: {} } },
+      },
     });
   });
 });

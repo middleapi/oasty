@@ -36,13 +36,13 @@ Converted:
 | 3.2 construct | 3.1 result |
 | --- | --- |
 | `openapi: 3.2.x` | `openapi: 3.1.2` |
-| `components.mediaTypes` and content-map `$ref`s to them | references inlined, the component map removed |
+| `components.mediaTypes` and content-map `$ref`s to them | references inlined, the component map removed; content entries whose reference cannot be inlined (external, unknown, or cyclic targets) are removed, as 3.1 content maps cannot hold references |
 | Media type `itemSchema` without a sibling `schema` | `schema: { type: "array", items: … }` (the 3.2 sequential media type data model) |
 | Response `summary` when no `description` exists | promoted to `description` (required in 3.1, so `""` is synthesized as a last resort) |
 | Example `dataValue` / `serializedValue` when `value` and `externalValue` are absent | promoted to `value` (in that order) |
 | Parameter `style: "cookie"` | removed, letting the 3.1 default `form` apply |
 
-Removed (no 3.1 equivalent): `$self`, server `name`, tag `summary`/`parent`/`kind`, the `query` operation and `additionalOperations` of Path Items, `in: "querystring"` parameters (from parameter lists and `components.parameters`), `allowReserved` on non-query parameters, media type `description`, media type / encoding `prefixEncoding`, `itemEncoding`, and nested `encoding`, a media type `itemSchema` beside an existing `schema`, response `summary` beside an existing `description`, OAuth `deviceAuthorization` flows, and security scheme `oauth2MetadataUrl` and `deprecated`.
+Removed (no 3.1 equivalent): `$self`, server `name`, tag `summary`/`parent`/`kind`, the `query` operation and `additionalOperations` of Path Items, `in: "querystring"` parameters (from parameter lists and `components.parameters`, together with references to the removed component entries), `allowReserved` on non-query parameters, media type `description`, media type / encoding `prefixEncoding`, `itemEncoding`, and nested `encoding`, a media type `itemSchema` beside an existing `schema`, response `summary` beside an existing `description`, OAuth `deviceAuthorization` flows, and security scheme `oauth2MetadataUrl` and `deprecated`.
 
 Known limitations: security requirements using URI keys and `$self`-relative reference resolution are passed through unchanged.
 
@@ -58,7 +58,7 @@ Converted:
 | Reference `summary` / `description` overrides | removed (3.0 references stand alone) |
 | Security requirement roles on non-OAuth schemes | emptied (`[]`) |
 
-Removed (no 3.0 equivalent): `webhooks`, `components.pathItems` (local `$ref`s pointing at it are left untouched and will dangle), `jsonSchemaDialect`, `info.summary`, `license.identifier`, and `mutualTLS` security schemes together with the security requirements referencing them.
+Removed (no 3.0 equivalent): `webhooks`, `components.pathItems` (local `$ref`s pointing at it are left untouched and will dangle), `jsonSchemaDialect`, `info.summary`, `license.identifier`, and `mutualTLS` security schemes — their names are stripped from every security requirement, and requirements that referenced only such schemes are removed.
 
 Schema Objects:
 
@@ -77,6 +77,8 @@ Schema Objects:
 | `type: "array"` without `items` | `items: {}` is added (required in 3.0) |
 | XML `nodeType` (carried over from a 3.2 chain) | `attribute: true` / `wrapped: true` where expressible, then removed (3.0 forbids unknown XML Object fields) |
 | `$schema`, `$id`, `$defs`, `$anchor`, `$dynamicRef`/`$dynamicAnchor`, `$vocabulary`, `$comment`, `if`/`then`/`else`, `dependentSchemas`/`dependentRequired`, `prefixItems` (and its trailing `items`), `contains`/`minContains`/`maxContains`, `patternProperties`, `propertyNames`, `unevaluatedItems`/`unevaluatedProperties`, `contentSchema` | removed — dropping these only loosens validation, which is the safe direction for a downgrade |
+
+Known limitations: `$ref`s that point into dropped keywords (`#/…/$defs/…` pointers, `$anchor` targets, `$id`-based bases) will dangle — hoist reusable subschemas into `components.schemas` before downgrading. Arbitrary non-standard schema keywords are preserved per the extension-preserving contract, even though the official 3.0 schema forbids unknown Schema Object fields.
 
 ## Sponsors
 

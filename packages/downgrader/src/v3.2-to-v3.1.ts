@@ -48,6 +48,7 @@ import {
 } from "./shared";
 
 const MEDIA_TYPES_REF_PREFIX = "#/components/mediaTypes/";
+const PARAMETERS_REF_PREFIX = "#/components/parameters/";
 
 const HTTP_METHODS = new Set([
   "delete",
@@ -60,19 +61,21 @@ const HTTP_METHODS = new Set([
   "trace",
 ]);
 
-/** How many chained `components.mediaTypes` references to follow. */
-const MAX_MEDIA_TYPE_REF_DEPTH = 32;
-
 /** 3.2-only fields with no 3.1 equivalent, removed per object. */
 const DROPPED_SERVER_KEYS = new Set(["name"]);
 const DROPPED_TAG_KEYS = new Set(["kind", "parent", "summary"]);
 const DROPPED_FLOWS_KEYS = new Set(["deviceAuthorization"]);
 
+/** Marks a content-map entry whose reference cannot be inlined. */
+const UNRESOLVED_MEDIA_TYPE = Symbol("unresolved media type");
+
 interface Context {
-  /** How deep the current media type resolution has recursed. */
-  depth: number;
   /** The raw `components.mediaTypes` map, used to inline references. */
   mediaTypes: UnknownRecord | undefined;
+  /** `$ref` strings of removed querystring `components.parameters` entries. */
+  removedParameterRefs: ReadonlySet<string>;
+  /** Media type names currently being resolved, for cycle detection. */
+  resolving: Set<string>;
 }
 
 const parseMediaTypeName = (ref: string): string | undefined => {
@@ -185,6 +188,12 @@ const convertRefOr = (
 const isQuerystringParameter = (value: unknown): boolean =>
   isRecord(value) && value.in === "querystring";
 
+/** Whether the value references a removed querystring component parameter. */
+const isRemovedParameterRef = (value: unknown, context: Context): boolean => {
+  const ref = getRef(value);
+  return ref !== undefined && context.removedParameterRefs.has(ref);
+};
+
 /** Parameter Objects and Header Objects share every field this converter touches. */
 const convertParameterOrHeader = (
   value: unknown,
@@ -235,13 +244,19 @@ const convertParameterOrHeader = (
   return out;
 };
 
-/** Converts a parameter list, removing 3.2-only `querystring` parameters. */
+/**
+ * Converts a parameter list, removing 3.2-only `querystring` parameters and
+ * references to removed querystring component parameters.
+ */
 const convertParameterList = (value: unknown, context: Context): unknown => {
   if (!Array.isArray(value)) {
     return deepClone(value);
   }
   return value
-    .filter((item) => !isQuerystringParameter(item))
+    .filter(
+      (item) =>
+        !(isQuerystringParameter(item) || isRemovedParameterRef(item, context))
+    )
     .map((item) => convertRefOr(item, context, convertParameterOrHeader));
 };
 
@@ -333,24 +348,37 @@ const resolveContentEntry = (value: unknown, context: Context): unknown => {
   if (
     name === undefined ||
     context.mediaTypes === undefined ||
-    !(name in context.mediaTypes) ||
-    context.depth >= MAX_MEDIA_TYPE_REF_DEPTH
+    !Object.hasOwn(context.mediaTypes, name) ||
+    context.resolving.has(name)
   ) {
-    // External, unknown, or cyclic target: keep the reference as-is.
-    return deepClone(value);
+    // External, unknown, or cyclic target: 3.1 content maps cannot hold
+    // references, so the entry is removed.
+    return UNRESOLVED_MEDIA_TYPE;
   }
-  context.depth += 1;
+  context.resolving.add(name);
   const resolved = resolveContentEntry(context.mediaTypes[name], context);
-  context.depth -= 1;
+  context.resolving.delete(name);
   return resolved;
 };
 
 /**
- * Converts a content map, inlining `components.mediaTypes` references: 3.1
- * content maps hold Media Type Objects only, never references.
+ * Converts a content map, inlining `components.mediaTypes` references (3.1
+ * content maps hold Media Type Objects only, never references) and removing
+ * entries whose reference cannot be inlined.
  */
-const convertContentMap = (value: unknown, context: Context): unknown =>
-  mapRecord(value, (item) => resolveContentEntry(item, context));
+const convertContentMap = (value: unknown, context: Context): unknown => {
+  if (!isRecord(value)) {
+    return deepClone(value);
+  }
+  const out: UnknownRecord = {};
+  for (const [key, item] of Object.entries(value)) {
+    const resolved = resolveContentEntry(item, context);
+    if (resolved !== UNRESOLVED_MEDIA_TYPE) {
+      setKey(out, key, resolved);
+    }
+  }
+  return out;
+};
 
 const convertRequestBody = (value: unknown, context: Context): unknown => {
   if (!isRecord(value)) {
@@ -506,7 +534,10 @@ const convertPaths = (value: unknown, context: Context): unknown =>
     key.startsWith("/") ? convertPathItem(item, context) : deepClone(item)
   );
 
-/** Converts `components.parameters`, removing `querystring` parameters. */
+/**
+ * Converts `components.parameters`, removing `querystring` parameters and
+ * references to removed querystring entries.
+ */
 const convertParameterComponents = (
   value: unknown,
   context: Context
@@ -516,7 +547,9 @@ const convertParameterComponents = (
   }
   const out: UnknownRecord = {};
   for (const [name, item] of Object.entries(value)) {
-    if (!isQuerystringParameter(item)) {
+    if (
+      !(isQuerystringParameter(item) || isRemovedParameterRef(item, context))
+    ) {
       setKey(out, name, convertRefOr(item, context, convertParameterOrHeader));
     }
   }
@@ -622,6 +655,20 @@ const convertComponents = (value: unknown, context: Context): unknown => {
   return out;
 };
 
+/** Collects the `$ref` strings of querystring `components.parameters` entries. */
+const indexRemovedParameterRefs = (components: unknown): Set<string> => {
+  const removed = new Set<string>();
+  const parameters = isRecord(components) ? components.parameters : undefined;
+  if (isRecord(parameters)) {
+    for (const [name, parameter] of Object.entries(parameters)) {
+      if (isQuerystringParameter(parameter)) {
+        removed.add(PARAMETERS_REF_PREFIX + name);
+      }
+    }
+  }
+  return removed;
+};
+
 const convertSpec = (spec: unknown): unknown => {
   if (!isRecord(spec)) {
     return deepClone(spec);
@@ -631,7 +678,11 @@ const convertSpec = (spec: unknown): unknown => {
     isRecord(components) && isRecord(components.mediaTypes)
       ? components.mediaTypes
       : undefined;
-  const context: Context = { depth: 0, mediaTypes };
+  const context: Context = {
+    mediaTypes,
+    removedParameterRefs: indexRemovedParameterRefs(components),
+    resolving: new Set(),
+  };
   const out: UnknownRecord = {};
   for (const [key, value] of Object.entries(spec)) {
     switch (key) {

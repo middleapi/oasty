@@ -144,17 +144,27 @@ const applyTypes = (
   }
   // Multiple non-null types: 3.0 only allows a single `type`, so the type
   // union moves into `anyOf` branches.
-  const variants = rest.map((item) =>
-    nullable ? { nullable: true, type: item } : { type: item }
-  );
+  const variants = rest.map((item) => {
+    const variant: UnknownRecord = { type: item };
+    if (item === "array") {
+      // 3.0 requires `items` whenever `type` is "array".
+      variant.items = out.items === undefined ? {} : deepClone(out.items);
+    }
+    if (nullable) {
+      variant.nullable = true;
+    }
+    return variant;
+  });
   if (out.anyOf === undefined) {
     out.anyOf = variants;
-  } else {
+  } else if (out.allOf === undefined || Array.isArray(out.allOf)) {
     out.allOf = [
       ...(Array.isArray(out.allOf) ? out.allOf : []),
       { anyOf: variants },
     ];
   }
+  // With both anyOf occupied and a malformed allOf, the inexpressible type
+  // union is dropped rather than clobbering the passed-through allOf.
 };
 
 const convertType = (schema: UnknownRecord, out: UnknownRecord): void => {
@@ -290,9 +300,17 @@ const convertSchema = (schema: unknown): unknown => {
   // oxlint-disable-next-line no-use-before-define -- mutually recursive with convertSchemaFields, as schemas are recursive structures
   const out = convertSchemaFields(schema);
   if (typeof ref === "string") {
-    // 3.0 references must stand alone: keep the siblings and move the
-    // reference into an `allOf` member.
-    out.allOf = [{ $ref: ref }, ...(Array.isArray(out.allOf) ? out.allOf : [])];
+    if (out.allOf === undefined || Array.isArray(out.allOf)) {
+      // 3.0 references must stand alone: keep the siblings and move the
+      // reference into an `allOf` member.
+      out.allOf = [
+        { $ref: ref },
+        ...(Array.isArray(out.allOf) ? out.allOf : []),
+      ];
+    } else {
+      // A malformed allOf passes through, so the reference stays in place.
+      setKey(out, "$ref", ref);
+    }
   }
   return out;
 };
@@ -346,8 +364,15 @@ const convertSchemaFields = (schema: UnknownRecord): UnknownRecord => {
   const hasPrefixItems = "prefixItems" in schema;
 
   for (const [key, value] of Object.entries(schema)) {
+    if (key === "$ref") {
+      // A string $ref is re-attached by convertSchema; malformed values pass
+      // through unchanged.
+      if (typeof value !== "string") {
+        setKey(out, key, deepClone(value));
+      }
+      continue;
+    }
     if (
-      key === "$ref" ||
       DROPPED_SCHEMA_KEYWORDS.has(key) ||
       POSTPROCESSED_SCHEMA_KEYWORDS.has(key)
     ) {

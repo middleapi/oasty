@@ -1,6 +1,10 @@
 {
   "extends": "../../tsconfig.lib.json",
   "references": [{ "path": "../types" }],
+  "compilerOptions": {
+    "outDir": "out",
+    "tsBuildInfoFile": "out/.tsbuildinfo"
+  },
   "include": ["package.json", "src"],
   "exclude": [
     "**/*.test.*",
