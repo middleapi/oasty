@@ -68,7 +68,7 @@ Schema Objects:
 | `$ref` with sibling keywords | siblings kept, `$ref` wrapped into `allOf` |
 | `type: ["T", "null"]` | `type: "T"` plus `nullable: true` |
 | `enum: []` / duplicate `required` entries | `enum` removed / `required` deduplicated (3.0 requires a non-empty `enum` and unique `required`) |
-| `type: "null"` | `nullable: true` plus `enum: [null]` |
+| `type: "null"` | `nullable: true` plus `enum: [null]`; a sibling `enum`/`const` is intersected with the null type — an `enum` containing `null` collapses to `[null]`, and a sibling excluding `null` yields a match-nothing schema (`not: {}`), since the source accepted no value |
 | `type` with several non-null entries | `anyOf` of single-type schemas |
 | `const` | single-value `enum` |
 | numeric `exclusiveMinimum` / `exclusiveMaximum` | bound plus boolean flag (the tighter bound wins) |

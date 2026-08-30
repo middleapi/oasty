@@ -141,9 +141,27 @@ const applyTypes = (
       return;
     }
     // `type: "null"` alone: 3.0's `nullable` needs a sibling `type`, so a
-    // single-value `enum` is the closest expressible form.
+    // single-value `enum` is the closest expressible form. Sibling `enum`/
+    // `const` values intersect with the null type — only null can survive,
+    // and a sibling that excludes null leaves a schema matching nothing.
     out.nullable = true;
-    if (!("enum" in schema) && !("const" in schema)) {
+    if ("const" in schema) {
+      // convertConst emits the single-value enum; a non-null const
+      // contradicts the null type, so nothing may validate.
+      if (schema.const !== null) {
+        out.not = {};
+      }
+      return;
+    }
+    if (Array.isArray(schema.enum)) {
+      if (schema.enum.includes(null)) {
+        out.enum = [null];
+      } else {
+        out.not = {};
+      }
+      return;
+    }
+    if (!("enum" in schema)) {
       out.enum = [null];
     }
     return;

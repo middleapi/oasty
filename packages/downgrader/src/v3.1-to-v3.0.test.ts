@@ -879,15 +879,37 @@ describe("downgradeSchemaV31ToV30", () => {
       });
     });
 
-    it("does not overwrite an existing enum for a null-only type", () => {
+    it("intersects an existing enum with a null-only type", () => {
       expect(
         downgradeSchemaV31ToV30({ enum: ["a", null], type: ["null"] })
-      ).toEqual({ enum: ["a", null], nullable: true });
+      ).toEqual({ enum: [null], nullable: true });
     });
 
-    it("lets const provide the enum for a null-only type", () => {
+    it("makes the schema match nothing when the enum of a null-only type excludes null", () => {
+      expect(downgradeSchemaV31ToV30({ enum: ["a"], type: ["null"] })).toEqual({
+        enum: ["a"],
+        not: {},
+        nullable: true,
+      });
+    });
+
+    it("clones a malformed enum of a null-only type through", () => {
+      expect(
+        downgradeSchemaV31ToV30(asSchema({ enum: "junk", type: ["null"] }))
+      ).toEqual({ enum: "junk", nullable: true });
+    });
+
+    it("keeps a null const as the enum of a null-only type", () => {
+      expect(downgradeSchemaV31ToV30({ const: null, type: ["null"] })).toEqual({
+        enum: [null],
+        nullable: true,
+      });
+    });
+
+    it("makes the schema match nothing when a non-null const contradicts a null-only type", () => {
       expect(downgradeSchemaV31ToV30({ const: 7, type: ["null"] })).toEqual({
         enum: [7],
+        not: {},
         nullable: true,
       });
     });
