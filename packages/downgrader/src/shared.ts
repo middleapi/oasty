@@ -10,6 +10,42 @@
 export type UnknownRecord = Record<string, unknown>;
 
 /**
+ * Returned by a converter to remove its entry from the surrounding object or
+ * array: the single signal for constructs the target version cannot express.
+ */
+export const DROP = Symbol("drop");
+
+/**
+ * Converts one field of a record. The whole source record is passed along
+ * for decisions that depend on sibling fields.
+ */
+// oxlint-disable-next-line anti-slop/no-unsafe-dictionary-type -- the source is an arbitrary user-supplied object
+export type FieldConverter = (item: unknown, source: UnknownRecord) => unknown;
+
+/**
+ * What happens to each known field of a record: a converter, or `DROP` to
+ * remove the field. Fields not listed (unknown keys, `x-` extensions) are
+ * deep-cloned as they are.
+ */
+// oxlint-disable-next-line anti-slop/no-unsafe-dictionary-type -- the tables are keyed by arbitrary OpenAPI field names
+export type FieldTable = Readonly<Record<string, FieldConverter | typeof DROP>>;
+
+export const HTTP_METHODS = [
+  "delete",
+  "get",
+  "head",
+  "options",
+  "patch",
+  "post",
+  "put",
+  "trace",
+] as const;
+
+/** Field-table entries routing every Operation Object of a Path Item to `convert`. */
+export const operationFields = (convert: FieldConverter): FieldTable =>
+  Object.fromEntries(HTTP_METHODS.map((method) => [method, convert]));
+
+/**
  * Whether the value is a plain object (the only shape the converters walk
  * into). Arrays, class instances, and primitives are handled by reference or
  * by dedicated array helpers.
@@ -43,11 +79,14 @@ const cloneValue = (
   value: unknown,
   seen: WeakMap<object, unknown>
 ): unknown => {
+  if (!(Array.isArray(value) || isRecord(value))) {
+    return value;
+  }
+  const existing = seen.get(value);
+  if (existing !== undefined) {
+    return existing;
+  }
   if (Array.isArray(value)) {
-    const existing = seen.get(value);
-    if (existing !== undefined) {
-      return existing;
-    }
     const out: unknown[] = [];
     seen.set(value, out);
     for (const item of value) {
@@ -55,19 +94,12 @@ const cloneValue = (
     }
     return out;
   }
-  if (isRecord(value)) {
-    const existing = seen.get(value);
-    if (existing !== undefined) {
-      return existing;
-    }
-    const out: UnknownRecord = {};
-    seen.set(value, out);
-    for (const [key, item] of Object.entries(value)) {
-      setKey(out, key, cloneValue(item, seen));
-    }
-    return out;
+  const out: UnknownRecord = {};
+  seen.set(value, out);
+  for (const [key, item] of Object.entries(value)) {
+    setKey(out, key, cloneValue(item, seen));
   }
-  return value;
+  return out;
 };
 
 /**
@@ -89,47 +121,46 @@ export const deepClone = <T>(value: T): T => {
 const converting = new WeakSet<object>();
 
 /**
- * Runs `convert` unless `value` is already being converted higher up the
- * call stack — a cyclic reference, which would otherwise recurse forever.
- * The cycling subtree falls back to a cycle-preserving deep clone.
+ * Rebuilds a plain object field by field: each key goes through its entry in
+ * `fields` (or is deep-cloned when it has none), entries mapped to or
+ * returning `DROP` are left out, and `finish` receives the result together
+ * with the source for fix-ups that depend on several fields. Non-object input
+ * is deep-cloned unchanged, and so is an object already being converted
+ * higher up the call stack: a cyclic reference, which would otherwise recurse
+ * forever.
  */
-export const withCycleGuard = (
-  value: UnknownRecord,
-  convert: () => unknown
+export const convertRecord = (
+  value: unknown,
+  fields: FieldTable,
+  finish?: (out: UnknownRecord, source: UnknownRecord) => unknown
 ): unknown => {
-  if (converting.has(value)) {
+  if (!isRecord(value) || converting.has(value)) {
     return deepClone(value);
   }
   converting.add(value);
   try {
-    return convert();
+    const out: UnknownRecord = {};
+    for (const [key, item] of Object.entries(value)) {
+      const convert = Object.hasOwn(fields, key) ? fields[key] : undefined;
+      if (convert === DROP) {
+        continue;
+      }
+      const converted =
+        convert === undefined ? deepClone(item) : convert(item, value);
+      if (converted !== DROP) {
+        setKey(out, key, converted);
+      }
+    }
+    return finish === undefined ? out : finish(out, value);
   } finally {
     converting.delete(value);
   }
 };
 
 /**
- * Deep-clones a plain object without the given keys, the building block for
- * removing fields the target version cannot express. Non-object input is
+ * Applies `convert` to every value of a plain object, preserving key order
+ * and leaving out entries it turns into `DROP`. Non-object input is
  * deep-cloned unchanged.
- */
-export const omitKeys = (
-  value: unknown,
-  keys: ReadonlySet<string>
-): unknown => {
-  if (!isRecord(value)) {
-    return deepClone(value);
-  }
-  return Object.fromEntries(
-    Object.entries(value)
-      .filter(([key]) => !keys.has(key))
-      .map(([key, item]) => [key, deepClone(item)])
-  );
-};
-
-/**
- * Applies `convert` to every value of a plain object, preserving key order.
- * Non-object input is deep-cloned unchanged.
  */
 export const mapRecord = (
   value: unknown,
@@ -138,14 +169,19 @@ export const mapRecord = (
   if (!isRecord(value)) {
     return deepClone(value);
   }
-  return Object.fromEntries(
-    Object.entries(value).map(([key, item]) => [key, convert(item, key)])
-  );
+  const out: UnknownRecord = {};
+  for (const [key, item] of Object.entries(value)) {
+    const converted = convert(item, key);
+    if (converted !== DROP) {
+      setKey(out, key, converted);
+    }
+  }
+  return out;
 };
 
 /**
- * Applies `convert` to every element of an array. Non-array input is
- * deep-cloned unchanged.
+ * Applies `convert` to every element of an array, leaving out elements it
+ * turns into `DROP`. Non-array input is deep-cloned unchanged.
  */
 export const mapArray = (
   value: unknown,
@@ -154,7 +190,7 @@ export const mapArray = (
   if (!Array.isArray(value)) {
     return deepClone(value);
   }
-  return value.map((item) => convert(item));
+  return value.map((item) => convert(item)).filter((item) => item !== DROP);
 };
 
 /**

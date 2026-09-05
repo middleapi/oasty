@@ -1,15 +1,31 @@
+/* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns -- the helpers under test are the converters' `unknown`-typed I/O boundary, so the test doubles mirror their signatures */
+
+import type { UnknownRecord } from "./shared";
 import {
+  convertRecord,
   deepClone,
+  DROP,
   getRef,
+  HTTP_METHODS,
   isRecord,
   mapArray,
   mapRecord,
+  operationFields,
   setKey,
-  withCycleGuard,
 } from "./shared";
-import type { UnknownRecord } from "./shared";
 
 const identity = <T>(value: T): T => value;
+
+const asRecord = (value: unknown): UnknownRecord =>
+  // SAFETY: the helpers return plain objects for plain-object input; the tests inspect their keys.
+  value as UnknownRecord;
+
+/** A converter that recurses into `self`, so a self-referencing node re-enters convertRecord. */
+const convertNode = (value: unknown): unknown =>
+  convertRecord(value, {
+    name: () => "converted",
+    self: (item) => convertNode(item),
+  });
 
 describe("isRecord", () => {
   it("returns true for plain object literals", () => {
@@ -60,17 +76,11 @@ describe("deepClone", () => {
     expect(clone.nested.inner).not.toBe(input.nested.inner);
   });
 
-  it("keeps functions by reference", () => {
-    const input = { fn: identity };
-    const clone = deepClone(input);
-    expect(clone.fn).toBe(identity);
-  });
-
-  it("keeps class instances by reference", () => {
+  it("keeps functions and class instances by reference", () => {
     const date = new Date();
     const map = new Map<string, number>();
-    const input = { date, map };
-    const clone = deepClone(input);
+    const clone = deepClone({ date, fn: identity, map });
+    expect(clone.fn).toBe(identity);
     expect(clone.date).toBe(date);
     expect(clone.map).toBe(map);
   });
@@ -84,18 +94,13 @@ describe("deepClone", () => {
 
   it("copies a hostile __proto__ own key as a plain own data property without prototype pollution", () => {
     const input: unknown = JSON.parse('{"__proto__": {"polluted": true}}');
-    const clone = deepClone(input);
-    // SAFETY: JSON.parse produces a plain object; the cast lets the test inspect its own keys.
-    const cloneRecord = clone as UnknownRecord;
-    expect(Object.getOwnPropertyNames(cloneRecord)).toContain("__proto__");
-    const descriptor = Object.getOwnPropertyDescriptor(
-      cloneRecord,
-      "__proto__"
-    );
-    expect(descriptor?.value).toEqual({ polluted: true });
-    expect(Object.getPrototypeOf(cloneRecord)).toBe(Object.prototype);
-    // SAFETY: probing an arbitrary key on a fresh object to prove Object.prototype was not polluted.
-    expect(({} as UnknownRecord).polluted).toBeUndefined();
+    const clone = asRecord(deepClone(input));
+    expect(Object.getOwnPropertyNames(clone)).toContain("__proto__");
+    expect(Object.getOwnPropertyDescriptor(clone, "__proto__")?.value).toEqual({
+      polluted: true,
+    });
+    expect(Object.getPrototypeOf(clone)).toBe(Object.prototype);
+    expect(asRecord({}).polluted).toBeUndefined();
   });
 
   it("preserves key order", () => {
@@ -103,8 +108,151 @@ describe("deepClone", () => {
     input.zebra = 1;
     input.apple = 2;
     input.mango = 3;
-    const clone = deepClone(input);
-    expect(Object.keys(clone)).toEqual(["zebra", "apple", "mango"]);
+    expect(Object.keys(deepClone(input))).toEqual(["zebra", "apple", "mango"]);
+  });
+
+  it("preserves object cycles instead of recursing forever", () => {
+    const child: UnknownRecord = {};
+    const node: UnknownRecord = { child, name: "root" };
+    child.parent = node;
+    const clone = deepClone(node);
+    expect(clone).not.toBe(node);
+    expect(clone.name).toBe("root");
+    expect(asRecord(clone.child).parent).toBe(clone);
+  });
+
+  it("preserves array cycles", () => {
+    const list: unknown[] = [1];
+    list.push(list);
+    const clone = deepClone(list);
+    expect(clone).not.toBe(list);
+    expect(clone[0]).toBe(1);
+    expect(clone[1]).toBe(clone);
+  });
+
+  it("clones shared references once", () => {
+    const shared = { a: 1 };
+    const clone = deepClone({ x: shared, y: shared });
+    expect(clone.x).toEqual({ a: 1 });
+    expect(clone.x).not.toBe(shared);
+    expect(clone.x).toBe(clone.y);
+  });
+});
+
+describe("convertRecord", () => {
+  it("routes listed fields through their converters and deep-clones the rest", () => {
+    const extra = { deep: true };
+    const result = asRecord(
+      convertRecord(
+        { a: 1, b: 2, extra },
+        { a: (item) => [item], b: () => "converted" }
+      )
+    );
+    expect(result).toEqual({ a: [1], b: "converted", extra: { deep: true } });
+    expect(result.extra).not.toBe(extra);
+  });
+
+  it("removes fields mapped to DROP and fields whose converter returns DROP", () => {
+    const result = convertRecord(
+      { gone: 1, kept: 2, maybe: 3 },
+      { gone: DROP, maybe: (item) => (item === 3 ? DROP : item) }
+    );
+    expect(result).toEqual({ kept: 2 });
+  });
+
+  it("passes the whole source record to converters and to finish", () => {
+    const source = { flag: true, value: 1 };
+    const result = convertRecord(
+      source,
+      { value: (item, record) => (record.flag ? item : DROP) },
+      (out, record) => ({ ...out, sameSource: record === source })
+    );
+    expect(result).toEqual({ flag: true, sameSource: true, value: 1 });
+  });
+
+  it("lets finish replace the whole result", () => {
+    expect(convertRecord({ a: 1 }, {}, () => DROP)).toBe(DROP);
+  });
+
+  it("preserves key order", () => {
+    const input: UnknownRecord = {};
+    input.zebra = 1;
+    input.apple = 2;
+    input.mango = 3;
+    const result = asRecord(convertRecord(input, { apple: identity }));
+    expect(Object.keys(result)).toEqual(["zebra", "apple", "mango"]);
+  });
+
+  it("deep-clones non-object input without consulting the table", () => {
+    const convert = vi.fn(identity);
+    const list = [{ a: 1 }];
+    const result = convertRecord(list, { a: convert });
+    expect(result).toEqual(list);
+    expect(result).not.toBe(list);
+    expect(convertRecord("text", { a: convert })).toBe("text");
+    expect(convertRecord(null, { a: convert })).toBe(null);
+    expect(convert).not.toHaveBeenCalled();
+  });
+
+  it("does not look up table entries through the prototype chain", () => {
+    const input: unknown = JSON.parse(
+      '{"constructor": 1, "toString": 2, "__proto__": {"polluted": true}}'
+    );
+    const result = asRecord(convertRecord(input, {}));
+    expect(Object.getOwnPropertyDescriptor(result, "constructor")?.value).toBe(
+      1
+    );
+    expect(Object.getOwnPropertyDescriptor(result, "toString")?.value).toBe(2);
+    expect(Object.getOwnPropertyDescriptor(result, "__proto__")?.value).toEqual(
+      { polluted: true }
+    );
+    expect(Object.getPrototypeOf(result)).toBe(Object.prototype);
+    expect(asRecord({}).polluted).toBeUndefined();
+  });
+
+  it("falls back to a cycle-preserving clone when re-entered for the same object", () => {
+    const node: UnknownRecord = { name: "root" };
+    node.self = node;
+    const result = asRecord(convertNode(node));
+    expect(result.name).toBe("converted");
+    const inner = asRecord(result.self);
+    expect(inner).not.toBe(node);
+    expect(inner.name).toBe("root");
+    expect(inner.self).toBe(inner);
+  });
+
+  it("converts shared acyclic references at every occurrence", () => {
+    const shared = { name: "x" };
+    const result = convertRecord(
+      { a: shared, b: shared },
+      {
+        a: (item) => convertRecord(item, { name: () => "a" }),
+        b: (item) => convertRecord(item, { name: () => "b" }),
+      }
+    );
+    expect(result).toEqual({ a: { name: "a" }, b: { name: "b" } });
+  });
+
+  it("releases the cycle guard when a converter throws", () => {
+    const value = { a: 1 };
+    expect(() =>
+      convertRecord(value, {
+        a: () => {
+          throw new Error("boom");
+        },
+      })
+    ).toThrow("boom");
+    expect(convertRecord(value, { a: () => 2 })).toEqual({ a: 2 });
+  });
+});
+
+describe("operationFields", () => {
+  it("routes every HTTP method of a path item to the converter", () => {
+    const fields = operationFields(identity);
+    expect(Object.keys(fields)).toEqual([...HTTP_METHODS]);
+    expect(Object.values(fields).every((entry) => entry === identity)).toBe(
+      true
+    );
   });
 });
 
@@ -123,13 +271,19 @@ describe("mapRecord", () => {
     ]);
   });
 
+  it("leaves out entries whose converter returns DROP", () => {
+    const result = mapRecord({ a: 1, b: 2, c: 3 }, (item) =>
+      item === 2 ? DROP : item
+    );
+    expect(result).toEqual({ a: 1, c: 3 });
+  });
+
   it("preserves key order", () => {
     const input: UnknownRecord = {};
     input.zebra = 1;
     input.apple = 2;
-    const result = mapRecord(input, (item) => item);
-    // SAFETY: mapRecord returns a plain object for plain-object input.
-    expect(Object.keys(result as UnknownRecord)).toEqual(["zebra", "apple"]);
+    const result = asRecord(mapRecord(input, identity));
+    expect(Object.keys(result)).toEqual(["zebra", "apple"]);
   });
 
   it("deep-clones non-object input unchanged without calling the converter", () => {
@@ -138,7 +292,6 @@ describe("mapRecord", () => {
     const result = mapRecord(array, convert);
     expect(result).toEqual(array);
     expect(result).not.toBe(array);
-    expect(convert).not.toHaveBeenCalled();
     expect(mapRecord("text", convert)).toBe("text");
     expect(mapRecord(null, convert)).toBe(null);
     expect(convert).not.toHaveBeenCalled();
@@ -156,13 +309,17 @@ describe("mapArray", () => {
     expect(result).toEqual([2, 3, 4]);
   });
 
+  it("leaves out elements whose converter returns DROP", () => {
+    const result = mapArray([1, 2, 3], (item) => (item === 2 ? DROP : item));
+    expect(result).toEqual([1, 3]);
+  });
+
   it("deep-clones non-array input unchanged without calling the converter", () => {
     const convert = vi.fn(identity);
     const record = { nested: { deep: true } };
     const result = mapArray(record, convert);
     expect(result).toEqual(record);
     expect(result).not.toBe(record);
-    expect(convert).not.toHaveBeenCalled();
     expect(mapArray(7, convert)).toBe(7);
     expect(mapArray(undefined, convert)).toBe(undefined);
     expect(convert).not.toHaveBeenCalled();
@@ -183,12 +340,9 @@ describe("getRef", () => {
     expect(getRef([{ $ref: "#/x" }])).toBeUndefined();
   });
 
-  it("returns undefined when $ref is missing", () => {
+  it("returns undefined when $ref is missing or not a string", () => {
     expect(getRef({})).toBeUndefined();
     expect(getRef({ ref: "#/x" })).toBeUndefined();
-  });
-
-  it("returns undefined when $ref is not a string", () => {
     expect(getRef({ $ref: 42 })).toBeUndefined();
     expect(getRef({ $ref: { nested: true } })).toBeUndefined();
     expect(getRef({ $ref: null })).toBeUndefined();
@@ -199,8 +353,7 @@ describe("setKey", () => {
   it("defines an enumerable, writable, configurable own property", () => {
     const target: UnknownRecord = {};
     setKey(target, "name", "value");
-    const descriptor = Object.getOwnPropertyDescriptor(target, "name");
-    expect(descriptor).toEqual({
+    expect(Object.getOwnPropertyDescriptor(target, "name")).toEqual({
       configurable: true,
       enumerable: true,
       value: "value",
@@ -215,53 +368,6 @@ describe("setKey", () => {
     expect(descriptor?.value).toEqual({ polluted: true });
     expect(descriptor?.enumerable).toBe(true);
     expect(Object.getPrototypeOf(target)).toBe(Object.prototype);
-    // SAFETY: probing an arbitrary key on a fresh object to prove Object.prototype was not polluted.
-    expect(({} as UnknownRecord).polluted).toBeUndefined();
-  });
-});
-
-describe("deepClone with cycles and shared references", () => {
-  it("preserves object cycles instead of recursing forever", () => {
-    const child: UnknownRecord = {};
-    const node: UnknownRecord = { child, name: "root" };
-    child.parent = node;
-    const clone = deepClone(node);
-    expect(clone).not.toBe(node);
-    expect(clone.name).toBe("root");
-    // SAFETY: deepClone preserves the runtime shape; the test pins the cycle.
-    expect((clone.child as UnknownRecord).parent).toBe(clone);
-  });
-
-  it("preserves array cycles", () => {
-    const list: unknown[] = [1];
-    list.push(list);
-    const clone = deepClone(list);
-    expect(clone).not.toBe(list);
-    expect(clone[0]).toBe(1);
-    expect(clone[1]).toBe(clone);
-  });
-
-  it("clones shared references once", () => {
-    const shared = { a: 1 };
-    const input = { x: shared, y: shared };
-    const clone = deepClone(input);
-    expect(clone.x).toEqual({ a: 1 });
-    expect(clone.x).not.toBe(shared);
-    expect(clone.x).toBe(clone.y);
-  });
-});
-
-describe("withCycleGuard", () => {
-  it("falls back to a cycle-preserving clone on re-entry", () => {
-    const target: UnknownRecord = {};
-    target.self = target;
-    const result = withCycleGuard(target, () =>
-      withCycleGuard(target, () => "converted")
-    );
-    expect(result).not.toBe("converted");
-    expect(result).not.toBe(target);
-    // SAFETY: the assertion above pins the fallback to the cloned record.
-    const clone = result as UnknownRecord;
-    expect(clone.self).toBe(clone);
+    expect(asRecord({}).polluted).toBeUndefined();
   });
 });

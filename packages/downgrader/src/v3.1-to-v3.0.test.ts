@@ -1,4 +1,4 @@
-/* oxlint-disable anti-slop/no-unknown-parameters -- the cast helpers deliberately accept `unknown` so tests can feed malformed input to the graceful-degradation branches */
+/* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns -- the helpers deliberately accept and return `unknown` so tests can feed malformed input to the graceful-degradation branches and inspect loosely-shaped output */
 
 import type { OpenAPIV3_1 } from "@oasty/types";
 
@@ -13,263 +13,173 @@ const asSchema = (value: unknown): OpenAPIV3_1.SchemaObject =>
   // SAFETY: tests deliberately feed malformed or loosely-shaped schemas to exercise graceful handling.
   value as OpenAPIV3_1.SchemaObject;
 
+const dig = (value: unknown, ...path: string[]): unknown => {
+  let current: unknown = value;
+  for (const key of path) {
+    // SAFETY: tests walk converter output whose shape the surrounding assertions pin down.
+    current = (current as UnknownRecord)[key];
+  }
+  return current;
+};
+
 const info = { title: "t", version: "1" };
 
+/** The smallest valid 3.1 document and its 3.0 counterpart. */
+const base = { info, openapi: "3.1.0", paths: {} };
+const converted = { info, openapi: "3.0.4", paths: {} };
+
+const convertSpec = (fields: UnknownRecord) =>
+  downgradeSpecV31ToV30(asSpec({ ...base, ...fields }));
+
+const convertPathItem = (pathItem: unknown): unknown =>
+  dig(convertSpec({ paths: { "/a": pathItem } }), "paths", "/a");
+
+const convertComponent = (kind: string, value: unknown): unknown =>
+  dig(
+    convertSpec({ components: { [kind]: { X: value } } }),
+    "components",
+    kind,
+    "X"
+  );
+
+const convertSchema = (schema: unknown): unknown =>
+  downgradeSchemaV31ToV30(asSchema(schema));
+
 describe("downgradeSpecV31ToV30", () => {
-  describe("version and top-level keys", () => {
+  describe("document", () => {
     it("rewrites the openapi version to 3.0.4", () => {
       expect(
         downgradeSpecV31ToV30({ info, openapi: "3.1.1", paths: {} })
-      ).toEqual({ info, openapi: "3.0.4", paths: {} });
+      ).toEqual(converted);
     });
 
-    it("adds openapi 3.0.4 when the openapi key is missing", () => {
-      expect(downgradeSpecV31ToV30(asSpec({ info, paths: {} }))).toEqual({
-        info,
-        openapi: "3.0.4",
-        paths: {},
+    it("adds openapi 3.0.4 and an empty paths object when they are missing", () => {
+      expect(downgradeSpecV31ToV30(asSpec({ info }))).toEqual(converted);
+    });
+
+    it("removes jsonSchemaDialect and webhooks without leaving traces", () => {
+      const result = convertSpec({
+        jsonSchemaDialect: "https://spec.openapis.org/oas/3.1/dialect/base",
+        webhooks: { newPet: { post: { summary: "s" } } },
       });
-    });
-
-    it("clones non-object spec input unchanged", () => {
-      expect(downgradeSpecV31ToV30(asSpec(null))).toBeNull();
-      expect(downgradeSpecV31ToV30(asSpec(42))).toBe(42);
-      expect(downgradeSpecV31ToV30(asSpec("spec"))).toBe("spec");
-    });
-
-    it("clones array spec input into a new array", () => {
-      const input = [1, { a: 1 }];
-      const result = downgradeSpecV31ToV30(asSpec(input));
-      expect(result).toEqual(input);
-      expect(result).not.toBe(input);
-    });
-
-    it("drops jsonSchemaDialect", () => {
-      expect(
-        downgradeSpecV31ToV30({
-          info,
-          jsonSchemaDialect: "https://spec.openapis.org/oas/3.1/dialect/base",
-          openapi: "3.1.0",
-          paths: {},
-        })
-      ).toEqual({ info, openapi: "3.0.4", paths: {} });
+      expect(result).toEqual(converted);
+      expect(result).not.toHaveProperty("x-webhooks");
     });
 
     it("preserves unknown top-level keys and extensions", () => {
-      expect(
-        downgradeSpecV31ToV30(
-          asSpec({
-            future: { a: 1 },
-            info,
-            openapi: "3.1.0",
-            paths: {},
-            "x-root": true,
-          })
-        )
-      ).toEqual({
+      expect(convertSpec({ future: { a: 1 }, "x-root": true })).toEqual({
+        ...converted,
         future: { a: 1 },
-        info,
-        openapi: "3.0.4",
-        paths: {},
         "x-root": true,
       });
+    });
+
+    it("clones non-object input unchanged", () => {
+      expect(downgradeSpecV31ToV30(asSpec(null))).toBeNull();
+      expect(downgradeSpecV31ToV30(asSpec(42))).toBe(42);
+      expect(downgradeSpecV31ToV30(asSpec("spec"))).toBe("spec");
+      const list = [1, { a: 1 }];
+      const result = downgradeSpecV31ToV30(asSpec(list));
+      expect(result).toEqual(list);
+      expect(result).not.toBe(list);
     });
   });
 
   describe("info", () => {
-    it("removes info.summary", () => {
+    it("removes summary and license.identifier and keeps the other fields", () => {
       expect(
-        downgradeSpecV31ToV30({
-          info: { summary: "short", title: "t", version: "1" },
-          openapi: "3.1.0",
-          paths: {},
-        })
-      ).toEqual({
-        info: { title: "t", version: "1" },
-        openapi: "3.0.4",
-        paths: {},
-      });
-    });
-
-    it("removes license.identifier and keeps the other license fields", () => {
-      expect(
-        downgradeSpecV31ToV30({
+        convertSpec({
           info: {
             license: {
               identifier: "MIT",
               name: "MIT",
               url: "https://opensource.org/license/mit",
             },
+            summary: "short",
             title: "t",
             version: "1",
           },
-          openapi: "3.1.0",
-          paths: {},
-        })
+        }).info
       ).toEqual({
-        info: {
-          license: { name: "MIT", url: "https://opensource.org/license/mit" },
-          title: "t",
-          version: "1",
-        },
-        openapi: "3.0.4",
-        paths: {},
+        license: { name: "MIT", url: "https://opensource.org/license/mit" },
+        title: "t",
+        version: "1",
       });
     });
 
-    it("clones malformed info unchanged", () => {
+    it("clones malformed info and license values unchanged", () => {
+      expect(convertSpec({ info: 42 }).info).toBe(42);
       expect(
-        downgradeSpecV31ToV30(asSpec({ info: 42, openapi: "3.1.0", paths: {} }))
-      ).toEqual({ info: 42, openapi: "3.0.4", paths: {} });
-    });
-
-    it("clones a malformed license unchanged", () => {
-      expect(
-        downgradeSpecV31ToV30(
-          asSpec({
-            info: { license: "MIT", title: "t", version: "1" },
-            openapi: "3.1.0",
-            paths: {},
-          })
-        )
+        convertSpec({ info: { license: "MIT", title: "t", version: "1" } }).info
       ).toEqual({
-        info: { license: "MIT", title: "t", version: "1" },
-        openapi: "3.0.4",
-        paths: {},
+        license: "MIT",
+        title: "t",
+        version: "1",
       });
     });
   });
 
   describe("paths", () => {
-    it("adds an empty paths object when missing", () => {
-      expect(downgradeSpecV31ToV30({ info, openapi: "3.1.0" })).toEqual({
-        info,
-        openapi: "3.0.4",
-        paths: {},
-      });
-    });
-
-    it("converts path items and clones non-path keys in paths", () => {
+    it("converts path items and clones non-path keys", () => {
       expect(
-        downgradeSpecV31ToV30({
-          info,
-          openapi: "3.1.0",
+        convertSpec({
           paths: {
             "/a": { get: { summary: "s" } },
             // Path-item-shaped on purpose: cloning must NOT convert it, so
             // no responses may be synthesized inside.
             "x-note": { get: { summary: "s" } },
           },
+        }).paths
+      ).toEqual({
+        "/a": {
+          get: { responses: { default: { description: "" } }, summary: "s" },
+        },
+        "x-note": { get: { summary: "s" } },
+      });
+    });
+
+    it("leaves a path item $ref field untouched, string or not", () => {
+      expect(
+        convertPathItem({
+          $ref: "#/components/pathItems/Reusable",
+          summary: "s",
         })
       ).toEqual({
-        info,
-        openapi: "3.0.4",
-        paths: {
-          "/a": {
-            get: {
-              responses: { default: { description: "" } },
-              summary: "s",
+        $ref: "#/components/pathItems/Reusable",
+        summary: "s",
+      });
+      expect(convertPathItem({ $ref: 42 })).toEqual({ $ref: 42 });
+    });
+
+    it("clones malformed paths, path items, operations, and nested objects unchanged", () => {
+      expect(convertSpec({ paths: "junk" }).paths).toBe("junk");
+      const paths = {
+        "/a": {
+          get: { requestBody: 42, responses: { "200": "junk" } },
+          parameters: [42],
+        },
+        "/b": {
+          post: {
+            requestBody: {
+              content: {
+                "application/json": "junk",
+                "multipart/form-data": { encoding: { field: "junk" } },
+              },
             },
+            responses: {},
           },
-          "x-note": { get: { summary: "s" } },
         },
-      });
-    });
-
-    it("clones a malformed paths value unchanged", () => {
-      expect(
-        downgradeSpecV31ToV30(asSpec({ info, openapi: "3.1.0", paths: "junk" }))
-      ).toEqual({ info, openapi: "3.0.4", paths: "junk" });
-    });
-  });
-
-  describe("webhooks", () => {
-    it("removes webhooks entirely", () => {
-      const result = downgradeSpecV31ToV30({
-        info,
-        openapi: "3.1.0",
-        webhooks: { newPet: { post: { summary: "s" } } },
-      });
-      expect(result).toEqual({ info, openapi: "3.0.4", paths: {} });
-      expect(result).not.toHaveProperty("webhooks");
-      expect(result).not.toHaveProperty("x-webhooks");
-    });
-  });
-
-  describe("components.pathItems", () => {
-    it("removes components.pathItems and keeps the other component maps", () => {
-      const result = downgradeSpecV31ToV30({
-        components: {
-          pathItems: { Reusable: { get: { summary: "s" } } },
-          schemas: { S: { type: "string" } },
-        },
-        info,
-        openapi: "3.1.0",
-        paths: {},
-      });
-      expect(result).toEqual({
-        components: { schemas: { S: { type: "string" } } },
-        info,
-        openapi: "3.0.4",
-        paths: {},
-      });
-      expect(result.components).not.toHaveProperty("pathItems");
-      expect(result.components).not.toHaveProperty("x-pathItems");
-    });
-
-    it("leaves a path item $ref field pointing at components.pathItems untouched", () => {
-      expect(
-        downgradeSpecV31ToV30({
-          info,
-          openapi: "3.1.0",
-          paths: {
-            "/a": { $ref: "#/components/pathItems/Reusable", summary: "s" },
-          },
-        })
-      ).toEqual({
-        info,
-        openapi: "3.0.4",
-        paths: {
-          "/a": { $ref: "#/components/pathItems/Reusable", summary: "s" },
-        },
-      });
-    });
-
-    it("clones a non-string path item $ref unchanged", () => {
-      expect(
-        downgradeSpecV31ToV30(
-          asSpec({ info, openapi: "3.1.0", paths: { "/a": { $ref: 42 } } })
-        )
-      ).toEqual({ info, openapi: "3.0.4", paths: { "/a": { $ref: 42 } } });
-    });
-
-    it("leaves reference objects pointing at components.pathItems untouched apart from override stripping", () => {
-      expect(
-        downgradeSpecV31ToV30({
-          components: {
-            callbacks: {
-              cb: { $ref: "#/components/pathItems/Reusable", summary: "s" },
-            },
-          },
-          info,
-          openapi: "3.1.0",
-          paths: {},
-        })
-      ).toEqual({
-        components: {
-          callbacks: { cb: { $ref: "#/components/pathItems/Reusable" } },
-        },
-        info,
-        openapi: "3.0.4",
-        paths: {},
-      });
+        "/c": { get: "junk" },
+        "/junk": "junk",
+      };
+      expect(convertSpec({ paths }).paths).toEqual(paths);
     });
   });
 
   describe("reference objects", () => {
     it("strips reference summary and description across components maps", () => {
       expect(
-        downgradeSpecV31ToV30({
+        convertSpec({
           components: {
             callbacks: { C: { $ref: "#/c/cb", summary: "s" } },
             examples: { E: { $ref: "#/c/e", description: "d" } },
@@ -282,488 +192,414 @@ describe("downgradeSpecV31ToV30", () => {
             responses: { R: { $ref: "#/c/r", description: "d" } },
             securitySchemes: { S: { $ref: "#/c/s", description: "d" } },
           },
-          info,
-          openapi: "3.1.0",
-          paths: {},
-        })
+        }).components
       ).toEqual({
-        components: {
-          callbacks: { C: { $ref: "#/c/cb" } },
-          examples: { E: { $ref: "#/c/e" } },
-          headers: { H: { $ref: "#/c/h" } },
-          links: { L: { $ref: "#/c/l" } },
-          parameters: { P: { $ref: "#/c/p" } },
-          requestBodies: { B: { $ref: "#/c/b" } },
-          responses: { R: { $ref: "#/c/r" } },
-          securitySchemes: { S: { $ref: "#/c/s" } },
-        },
-        info,
-        openapi: "3.0.4",
-        paths: {},
+        callbacks: { C: { $ref: "#/c/cb" } },
+        examples: { E: { $ref: "#/c/e" } },
+        headers: { H: { $ref: "#/c/h" } },
+        links: { L: { $ref: "#/c/l" } },
+        parameters: { P: { $ref: "#/c/p" } },
+        requestBodies: { B: { $ref: "#/c/b" } },
+        responses: { R: { $ref: "#/c/r" } },
+        securitySchemes: { S: { $ref: "#/c/s" } },
       });
     });
 
     it("strips reference overrides inside operations and path items", () => {
       expect(
-        downgradeSpecV31ToV30({
-          info,
-          openapi: "3.1.0",
-          paths: {
-            "/a": {
-              get: {
-                callbacks: { cb: { $ref: "#/c/cb", summary: "s" } },
-                parameters: [{ $ref: "#/c/p", description: "d" }],
-                requestBody: { $ref: "#/c/b", summary: "s" },
-                responses: { "200": { $ref: "#/c/r", summary: "s" } },
-              },
-              parameters: [{ $ref: "#/c/pp", summary: "s" }],
-            },
+        convertPathItem({
+          get: {
+            callbacks: { cb: { $ref: "#/c/cb", summary: "s" } },
+            parameters: [{ $ref: "#/c/p", description: "d" }],
+            requestBody: { $ref: "#/c/b", summary: "s" },
+            responses: { "200": { $ref: "#/c/r", summary: "s" } },
           },
+          parameters: [{ $ref: "#/c/pp", summary: "s" }],
         })
       ).toEqual({
-        info,
-        openapi: "3.0.4",
-        paths: {
-          "/a": {
-            get: {
-              callbacks: { cb: { $ref: "#/c/cb" } },
-              parameters: [{ $ref: "#/c/p" }],
-              requestBody: { $ref: "#/c/b" },
-              responses: { "200": { $ref: "#/c/r" } },
-            },
-            parameters: [{ $ref: "#/c/pp" }],
-          },
+        get: {
+          callbacks: { cb: { $ref: "#/c/cb" } },
+          parameters: [{ $ref: "#/c/p" }],
+          requestBody: { $ref: "#/c/b" },
+          responses: { "200": { $ref: "#/c/r" } },
         },
+        parameters: [{ $ref: "#/c/pp" }],
       });
     });
 
     it("strips reference overrides in response headers, links, and media type examples", () => {
       expect(
-        downgradeSpecV31ToV30({
-          components: {
-            responses: {
-              R: {
-                content: {
-                  "application/json": {
-                    examples: { e: { $ref: "#/c/e", summary: "s" } },
-                    schema: { type: ["string", "null"] },
-                  },
-                },
-                description: "ok",
-                headers: { H: { $ref: "#/c/h", summary: "s" } },
-                links: { l: { $ref: "#/c/l", description: "d" } },
-              },
+        convertComponent("responses", {
+          content: {
+            "application/json": {
+              examples: { e: { $ref: "#/c/e", summary: "s" } },
+              schema: { type: ["string", "null"] },
             },
           },
-          info,
-          openapi: "3.1.0",
-          paths: {},
+          description: "ok",
+          headers: { H: { $ref: "#/c/h", summary: "s" } },
+          links: { l: { $ref: "#/c/l", description: "d" } },
         })
       ).toEqual({
-        components: {
-          responses: {
-            R: {
-              content: {
-                "application/json": {
-                  examples: { e: { $ref: "#/c/e" } },
-                  schema: { nullable: true, type: "string" },
-                },
-              },
-              description: "ok",
-              headers: { H: { $ref: "#/c/h" } },
-              links: { l: { $ref: "#/c/l" } },
-            },
+        content: {
+          "application/json": {
+            examples: { e: { $ref: "#/c/e" } },
+            schema: { nullable: true, type: "string" },
           },
         },
-        info,
-        openapi: "3.0.4",
-        paths: {},
+        description: "ok",
+        headers: { H: { $ref: "#/c/h" } },
+        links: { l: { $ref: "#/c/l" } },
       });
     });
 
     it("keeps x- entries in a responses map unconverted", () => {
-      expect(
-        downgradeSpecV31ToV30(
-          asSpec({
-            info,
-            openapi: "3.1.0",
-            paths: {
-              "/a": {
-                get: {
-                  responses: {
-                    "200": { description: "ok" },
-                    "x-note": { $ref: "#/c/r", summary: "s" },
-                  },
-                },
-              },
-            },
-          })
-        )
-      ).toEqual({
-        info,
-        openapi: "3.0.4",
-        paths: {
-          "/a": {
-            get: {
-              responses: {
-                "200": { description: "ok" },
-                "x-note": { $ref: "#/c/r", summary: "s" },
-              },
-            },
-          },
-        },
+      const responses = {
+        "200": { description: "ok" },
+        "x-note": { $ref: "#/c/r", summary: "s" },
+      };
+      expect(convertPathItem({ get: { responses } })).toEqual({
+        get: { responses },
       });
     });
   });
 
   describe("operations", () => {
     it("synthesizes a minimal default responses object when an operation lacks one", () => {
-      expect(
-        downgradeSpecV31ToV30({
-          info,
-          openapi: "3.1.0",
-          paths: { "/a": { get: { operationId: "getA" } } },
-        })
-      ).toEqual({
-        info,
-        openapi: "3.0.4",
-        paths: {
-          "/a": {
-            get: {
-              operationId: "getA",
-              responses: { default: { description: "" } },
-            },
-          },
+      expect(convertPathItem({ get: { operationId: "getA" } })).toEqual({
+        get: {
+          operationId: "getA",
+          responses: { default: { description: "" } },
         },
-      });
-    });
-
-    it("clones a malformed operation unchanged", () => {
-      expect(
-        downgradeSpecV31ToV30(
-          asSpec({
-            info,
-            openapi: "3.1.0",
-            paths: { "/a": { get: "junk" } },
-          })
-        )
-      ).toEqual({
-        info,
-        openapi: "3.0.4",
-        paths: { "/a": { get: "junk" } },
       });
     });
 
     it("converts parameter schemas, content, and examples", () => {
       expect(
-        downgradeSpecV31ToV30({
-          components: {
-            parameters: {
-              P: {
+        convertPathItem({
+          get: {
+            parameters: [
+              {
                 examples: { e: { $ref: "#/c/e", summary: "s" } },
                 in: "query",
                 name: "p",
                 schema: { type: ["string", "null"] },
               },
-              Q: {
+              {
                 content: {
                   "text/plain": { schema: { type: ["integer", "null"] } },
                 },
                 in: "query",
                 name: "q",
               },
-            },
+            ],
+            responses: {},
           },
-          info,
-          openapi: "3.1.0",
-          paths: {},
         })
       ).toEqual({
-        components: {
-          parameters: {
-            P: {
+        get: {
+          parameters: [
+            {
               examples: { e: { $ref: "#/c/e" } },
               in: "query",
               name: "p",
               schema: { nullable: true, type: "string" },
             },
-            Q: {
+            {
               content: {
-                "text/plain": {
-                  schema: { nullable: true, type: "integer" },
-                },
+                "text/plain": { schema: { nullable: true, type: "integer" } },
               },
               in: "query",
               name: "q",
             },
-          },
+          ],
+          responses: {},
         },
-        info,
-        openapi: "3.0.4",
-        paths: {},
+      });
+    });
+
+    it("adds required: true to path parameters that lack it", () => {
+      expect(
+        convertPathItem({
+          get: {
+            parameters: [
+              {
+                content: { "text/plain": { schema: { type: "string" } } },
+                in: "path",
+                name: "id",
+              },
+              { in: "query", name: "q", schema: {} },
+            ],
+            responses: {},
+          },
+        })
+      ).toEqual({
+        get: {
+          parameters: [
+            {
+              content: { "text/plain": { schema: { type: "string" } } },
+              in: "path",
+              name: "id",
+              required: true,
+            },
+            { in: "query", name: "q", schema: {} },
+          ],
+          responses: {},
+        },
       });
     });
 
     it("converts request body content, media type encoding, and encoding headers", () => {
       expect(
-        downgradeSpecV31ToV30({
-          components: {
-            requestBodies: {
-              B: {
-                content: {
-                  "multipart/form-data": {
-                    encoding: {
-                      field: {
-                        contentType: "text/plain",
-                        headers: {
-                          H: { $ref: "#/c/h", summary: "s" },
-                          H2: { schema: { type: ["string", "null"] } },
-                        },
-                      },
-                    },
-                    example: { field: "v" },
-                    schema: { type: "object" },
+        convertComponent("requestBodies", {
+          content: {
+            "multipart/form-data": {
+              encoding: {
+                field: {
+                  contentType: "text/plain",
+                  headers: {
+                    H: { $ref: "#/c/h", summary: "s" },
+                    H2: { schema: { type: ["string", "null"] } },
                   },
                 },
-                description: "body",
-                required: true,
               },
+              example: { field: "v" },
+              schema: { type: "object" },
             },
           },
-          info,
-          openapi: "3.1.0",
-          paths: {},
+          description: "body",
+          required: true,
         })
       ).toEqual({
-        components: {
-          requestBodies: {
-            B: {
-              content: {
-                "multipart/form-data": {
-                  encoding: {
-                    field: {
-                      contentType: "text/plain",
-                      headers: {
-                        H: { $ref: "#/c/h" },
-                        H2: { schema: { nullable: true, type: "string" } },
-                      },
-                    },
-                  },
-                  example: { field: "v" },
-                  schema: { type: "object" },
+        content: {
+          "multipart/form-data": {
+            encoding: {
+              field: {
+                contentType: "text/plain",
+                headers: {
+                  H: { $ref: "#/c/h" },
+                  H2: { schema: { nullable: true, type: "string" } },
                 },
               },
-              description: "body",
-              required: true,
             },
+            example: { field: "v" },
+            schema: { type: "object" },
           },
         },
-        info,
-        openapi: "3.0.4",
-        paths: {},
+        description: "body",
+        required: true,
       });
     });
 
-    it("converts schemas under components.schemas including boolean schemas", () => {
+    it("converts inline callback objects, cloning x- keys and junk entries", () => {
       expect(
-        downgradeSpecV31ToV30({
-          components: {
-            schemas: { S: { type: ["string", "null"] }, T: true },
+        convertPathItem({
+          get: {
+            callbacks: {
+              inline: { expr: { get: {} }, "x-k": { expr: { get: {} } } },
+              junk: 7,
+            },
+            responses: {},
           },
-          info,
-          openapi: "3.1.0",
-          paths: {},
         })
       ).toEqual({
-        components: {
-          schemas: { S: { nullable: true, type: "string" }, T: {} },
+        get: {
+          callbacks: {
+            inline: {
+              expr: { get: { responses: { default: { description: "" } } } },
+              "x-k": { expr: { get: {} } },
+            },
+            junk: 7,
+          },
+          responses: {},
         },
-        info,
-        openapi: "3.0.4",
-        paths: {},
       });
+    });
+  });
+
+  describe("components", () => {
+    it("removes pathItems and keeps the other component maps", () => {
+      const result = convertSpec({
+        components: {
+          pathItems: { Reusable: { get: { summary: "s" } } },
+          schemas: { S: { type: "string" } },
+        },
+      });
+      expect(result.components).toEqual({ schemas: { S: { type: "string" } } });
+      expect(result.components).not.toHaveProperty("x-pathItems");
+    });
+
+    it("leaves references into components.pathItems intact apart from override stripping", () => {
+      expect(
+        convertComponent("callbacks", {
+          $ref: "#/components/pathItems/Reusable",
+          summary: "s",
+        })
+      ).toEqual({ $ref: "#/components/pathItems/Reusable" });
+    });
+
+    it("converts component callbacks and schemas, including boolean schemas", () => {
+      expect(
+        convertSpec({
+          components: {
+            callbacks: {
+              junkCallback: 42,
+              realCallback: {
+                "x-note": { "{$expr}": { get: {} } },
+                "{$request.body#/url}": { post: { summary: "s" } },
+              },
+            },
+            schemas: { S: { type: ["string", "null"] }, T: true },
+            "x-extra": { keep: true },
+          },
+        }).components
+      ).toEqual({
+        callbacks: {
+          junkCallback: 42,
+          realCallback: {
+            "x-note": { "{$expr}": { get: {} } },
+            "{$request.body#/url}": {
+              post: {
+                responses: { default: { description: "" } },
+                summary: "s",
+              },
+            },
+          },
+        },
+        schemas: { S: { nullable: true, type: "string" }, T: {} },
+        "x-extra": { keep: true },
+      });
+    });
+
+    it("clones a malformed components value unchanged", () => {
+      expect(convertSpec({ components: "junk" }).components).toBe("junk");
     });
   });
 
   describe("security", () => {
+    const apiKey = { in: "header", name: "k", type: "apiKey" };
+
     it("removes mutualTLS schemes and drops requirements that become empty", () => {
-      expect(
-        downgradeSpecV31ToV30(
-          asSpec({
-            components: {
-              securitySchemes: {
-                api: { in: "header", name: "k", type: "apiKey" },
-                mtls: { type: "mutualTLS" },
-              },
-            },
-            info,
-            openapi: "3.1.0",
-            paths: {},
-            security: [{ mtls: [] }, { api: [], mtls: [] }, {}],
-          })
-        )
-      ).toEqual({
+      const result = convertSpec({
+        components: {
+          securitySchemes: { api: apiKey, mtls: { type: "mutualTLS" } },
+        },
+        security: [{ mtls: [] }, { api: [], mtls: [] }, {}],
+      });
+      expect(result.components).toEqual({ securitySchemes: { api: apiKey } });
+      expect(result.security).toEqual([{ api: [] }, {}]);
+    });
+
+    it("removes reference aliases of mutualTLS schemes and their requirements", () => {
+      const result = convertSpec({
         components: {
           securitySchemes: {
-            api: { in: "header", name: "k", type: "apiKey" },
+            api: apiKey,
+            clientCert: { $ref: "#/components/securitySchemes/mtlsBase" },
+            mtlsBase: { type: "mutualTLS" },
           },
         },
-        info,
-        openapi: "3.0.4",
-        paths: {},
-        security: [{ api: [] }, {}],
+        security: [{ clientCert: [] }, { api: [] }],
+      });
+      expect(result.components).toEqual({ securitySchemes: { api: apiKey } });
+      expect(result.security).toEqual([{ api: [] }]);
+    });
+
+    it("survives cyclic, dangling, external, and malformed scheme aliases", () => {
+      const securitySchemes = {
+        dangling: { $ref: "#/components/securitySchemes/missing" },
+        external: { $ref: "https://example.com/s.json#/schemes/a" },
+        junk: 42,
+        nested: { $ref: "#/components/securitySchemes/a/b" },
+        ping: { $ref: "#/components/securitySchemes/pong" },
+        pong: { $ref: "#/components/securitySchemes/ping" },
+      };
+      expect(
+        convertSpec({ components: { securitySchemes } }).components
+      ).toEqual({
+        securitySchemes,
       });
     });
 
-    it("empties roles on non-OAuth schemes", () => {
+    it("empties roles on non-OAuth schemes and keeps them elsewhere", () => {
       expect(
-        downgradeSpecV31ToV30(
-          asSpec({
-            components: {
-              securitySchemes: {
-                api: { in: "header", name: "k", type: "apiKey" },
-                basic: { scheme: "basic", type: "http" },
-              },
+        convertSpec({
+          components: {
+            securitySchemes: {
+              api: apiKey,
+              basic: { scheme: "basic", type: "http" },
+              oauth: { flows: {}, type: "oauth2" },
+              oidc: { openIdConnectUrl: "https://x", type: "openIdConnect" },
             },
-            info,
-            openapi: "3.1.0",
-            paths: {},
-            security: [{ api: ["read"], basic: ["admin"] }],
-          })
-        )
-      ).toEqual({
-        components: {
-          securitySchemes: {
-            api: { in: "header", name: "k", type: "apiKey" },
-            basic: { scheme: "basic", type: "http" },
           },
-        },
-        info,
-        openapi: "3.0.4",
-        paths: {},
-        security: [{ api: [], basic: [] }],
-      });
-    });
-
-    it("keeps scopes for oauth2, openIdConnect, and unknown schemes", () => {
-      expect(
-        downgradeSpecV31ToV30(
-          asSpec({
-            components: {
-              securitySchemes: {
-                oauth: { flows: {}, type: "oauth2" },
-                oidc: { openIdConnectUrl: "https://x", type: "openIdConnect" },
-              },
-            },
-            info,
-            openapi: "3.1.0",
-            paths: {},
-            security: [{ oauth: ["read"], oidc: ["a"], unknownScheme: ["s"] }],
-          })
-        )
-      ).toEqual({
-        components: {
-          securitySchemes: {
-            oauth: { flows: {}, type: "oauth2" },
-            oidc: { openIdConnectUrl: "https://x", type: "openIdConnect" },
-          },
-        },
-        info,
-        openapi: "3.0.4",
-        paths: {},
-        security: [{ oauth: ["read"], oidc: ["a"], unknownScheme: ["s"] }],
-      });
+          security: [
+            { api: ["read"], basic: ["admin"] },
+            { oauth: ["read"], oidc: ["a"], unknownScheme: ["s"] },
+          ],
+        }).security
+      ).toEqual([
+        { api: [], basic: [] },
+        { oauth: ["read"], oidc: ["a"], unknownScheme: ["s"] },
+      ]);
     });
 
     it("converts operation-level security lists", () => {
       expect(
-        downgradeSpecV31ToV30(
-          asSpec({
-            components: {
-              securitySchemes: {
-                api: { in: "header", name: "k", type: "apiKey" },
-                mtls: { type: "mutualTLS" },
-              },
-            },
-            info,
-            openapi: "3.1.0",
-            paths: {
-              "/a": {
-                get: {
-                  responses: {},
-                  security: [{ mtls: [] }, { api: ["read"] }],
-                },
-              },
-            },
-          })
-        )
-      ).toEqual({
-        components: {
-          securitySchemes: {
-            api: { in: "header", name: "k", type: "apiKey" },
+        convertSpec({
+          components: {
+            securitySchemes: { api: apiKey, mtls: { type: "mutualTLS" } },
           },
-        },
-        info,
-        openapi: "3.0.4",
+          paths: {
+            "/a": {
+              get: {
+                responses: {},
+                security: [{ mtls: [] }, { api: ["read"] }],
+              },
+            },
+          },
+        }).paths
+      ).toEqual({ "/a": { get: { responses: {}, security: [{ api: [] }] } } });
+    });
+
+    it("omits a security list that mutualTLS removal emptied instead of making it public", () => {
+      const result = convertSpec({
+        components: { securitySchemes: { mtls: { type: "mutualTLS" } } },
         paths: {
-          "/a": {
-            get: { responses: {}, security: [{ api: [] }] },
-          },
+          "/admin": { get: { responses: {}, security: [{ mtls: [] }] } },
         },
+        security: [{ mtls: [] }],
       });
+      expect(result.paths).toEqual({ "/admin": { get: { responses: {} } } });
+      expect(result).not.toHaveProperty("security");
     });
 
-    it("clones non-record security requirements unchanged", () => {
-      expect(
-        downgradeSpecV31ToV30(
-          asSpec({
-            info,
-            openapi: "3.1.0",
-            paths: {},
-            security: [{ api: [] }, "junk", 42],
-          })
-        )
-      ).toEqual({
-        info,
-        openapi: "3.0.4",
-        paths: {},
-        security: [{ api: [] }, "junk", 42],
+    it("keeps an explicitly empty security list", () => {
+      const result = convertSpec({
+        paths: { "/a": { get: { responses: {}, security: [] } } },
+        security: [],
       });
+      expect(result.paths).toEqual({
+        "/a": { get: { responses: {}, security: [] } },
+      });
+      expect(result.security).toEqual([]);
     });
 
-    it("clones a non-array security value unchanged", () => {
+    it("clones malformed security values and scheme maps unchanged", () => {
       expect(
-        downgradeSpecV31ToV30(
-          asSpec({ info, openapi: "3.1.0", paths: {}, security: { api: [] } })
-        )
-      ).toEqual({
-        info,
-        openapi: "3.0.4",
-        paths: {},
-        security: { api: [] },
+        convertSpec({ security: [{ api: [] }, "junk", 42] }).security
+      ).toEqual([{ api: [] }, "junk", 42]);
+      expect(convertSpec({ security: { api: [] } }).security).toEqual({
+        api: [],
       });
-    });
-
-    it("clones a malformed securitySchemes value unchanged", () => {
       expect(
-        downgradeSpecV31ToV30(
-          asSpec({
-            components: { securitySchemes: "junk" },
-            info,
-            openapi: "3.1.0",
-            paths: {},
-          })
-        )
+        convertSpec({ components: { securitySchemes: "junk" } }).components
       ).toEqual({
-        components: { securitySchemes: "junk" },
-        info,
-        openapi: "3.0.4",
-        paths: {},
+        securitySchemes: "junk",
       });
     });
   });
 
-  describe("input non-mutation", () => {
+  describe("robustness", () => {
     it("never mutates the input document", () => {
       const input = asSpec({
         components: {
@@ -794,367 +630,366 @@ describe("downgradeSpecV31ToV30", () => {
         webhooks: { newPet: { post: { summary: "s" } } },
       });
       const before = structuredClone(input);
-
       downgradeSpecV31ToV30(input);
-
       expect(input).toEqual(before);
+    });
+
+    it("converts a path item that cycles through its callbacks without throwing", () => {
+      const callback: UnknownRecord = {};
+      const pathItem: UnknownRecord = {
+        get: { callbacks: { cb: callback }, responses: {} },
+      };
+      callback.expr = pathItem;
+      expect(() => convertPathItem(pathItem)).not.toThrow();
     });
   });
 });
 
 describe("downgradeSchemaV31ToV30", () => {
   describe("boolean and junk schemas", () => {
-    it("converts the true schema to an empty object", () => {
+    it("converts the boolean schemas", () => {
       expect(downgradeSchemaV31ToV30(true)).toEqual({});
-    });
-
-    it("converts the false schema to a match-nothing object", () => {
       expect(downgradeSchemaV31ToV30(false)).toEqual({ not: {} });
     });
 
-    it("clones junk primitive inputs unchanged", () => {
-      expect(downgradeSchemaV31ToV30(asSchema(null))).toBeNull();
-      expect(downgradeSchemaV31ToV30(asSchema(42))).toBe(42);
-      expect(downgradeSchemaV31ToV30(asSchema("x"))).toBe("x");
-    });
-
-    it("clones array inputs into a new array", () => {
-      const input = [{ type: "string" }];
-      const result = downgradeSchemaV31ToV30(asSchema(input));
-      expect(result).toEqual(input);
-      expect(result).not.toBe(input);
+    it("clones junk input unchanged", () => {
+      expect(convertSchema(null)).toBeNull();
+      expect(convertSchema(42)).toBe(42);
+      expect(convertSchema("x")).toBe("x");
+      const list = [{ type: "string" }];
+      const result = convertSchema(list);
+      expect(result).toEqual(list);
+      expect(result).not.toBe(list);
     });
   });
 
-  describe("$ref handling", () => {
-    it("keeps a pure $ref as a bare reference object", () => {
+  describe("$ref", () => {
+    it("keeps a pure $ref as a bare reference object, wherever it points", () => {
       const input = { $ref: "#/components/schemas/Pet" };
       const result = downgradeSchemaV31ToV30(input);
-      expect(result).toEqual({ $ref: "#/components/schemas/Pet" });
+      expect(result).toEqual(input);
       expect(result).not.toBe(input);
-    });
-
-    it("leaves a schema $ref pointing at components.pathItems untouched", () => {
-      expect(
-        downgradeSchemaV31ToV30({ $ref: "#/components/pathItems/Foo" })
-      ).toEqual({ $ref: "#/components/pathItems/Foo" });
-    });
-
-    it("wraps a $ref with sibling keywords into allOf", () => {
-      expect(downgradeSchemaV31ToV30({ $ref: "#/c/s", minLength: 1 })).toEqual({
-        allOf: [{ $ref: "#/c/s" }],
-        minLength: 1,
+      expect(convertSchema({ $ref: "#/components/pathItems/Foo" })).toEqual({
+        $ref: "#/components/pathItems/Foo",
       });
     });
 
-    it("merges a $ref into an existing allOf", () => {
-      expect(
-        downgradeSchemaV31ToV30({ $ref: "#/c/s", allOf: [{ type: "string" }] })
-      ).toEqual({ allOf: [{ $ref: "#/c/s" }, { type: "string" }] });
+    it.each([
+      [
+        "wraps a $ref with sibling keywords into allOf",
+        { $ref: "#/c/s", minLength: 1 },
+        { allOf: [{ $ref: "#/c/s" }], minLength: 1 },
+      ],
+      [
+        "merges a $ref into an existing allOf",
+        { $ref: "#/c/s", allOf: [{ type: "string" }] },
+        { allOf: [{ $ref: "#/c/s" }, { type: "string" }] },
+      ],
+      [
+        "keeps a malformed allOf and leaves the $ref in place",
+        { $ref: "#/c/s", allOf: "junk" },
+        { $ref: "#/c/s", allOf: "junk" },
+      ],
+      [
+        "passes a non-string $ref through unchanged",
+        { $ref: 123, type: "string" },
+        { $ref: 123, type: "string" },
+      ],
+      [
+        "passes a lone non-string $ref through unchanged",
+        { $ref: 123 },
+        { $ref: 123 },
+      ],
+    ])("%s", (_name, input, expected) => {
+      expect(convertSchema(input)).toEqual(expected);
     });
   });
 
   describe("type", () => {
-    it("keeps a single string type", () => {
-      expect(downgradeSchemaV31ToV30({ type: "string" })).toEqual({
-        type: "string",
-      });
-    });
-
-    it("converts a type array with null into type plus nullable", () => {
-      expect(downgradeSchemaV31ToV30({ type: ["string", "null"] })).toEqual({
-        nullable: true,
-        type: "string",
-      });
-    });
-
-    it("converts a null-only type into nullable plus a null enum", () => {
-      expect(downgradeSchemaV31ToV30({ type: ["null"] })).toEqual({
-        enum: [null],
-        nullable: true,
-      });
-      expect(downgradeSchemaV31ToV30({ type: "null" })).toEqual({
-        enum: [null],
-        nullable: true,
-      });
-    });
-
-    it("intersects an existing enum with a null-only type", () => {
-      expect(
-        downgradeSchemaV31ToV30({ enum: ["a", null], type: ["null"] })
-      ).toEqual({ enum: [null], nullable: true });
-    });
-
-    it("makes the schema match nothing when the enum of a null-only type excludes null", () => {
-      expect(downgradeSchemaV31ToV30({ enum: ["a"], type: ["null"] })).toEqual({
-        enum: ["a"],
-        not: {},
-        nullable: true,
-      });
-    });
-
-    it("clones a malformed enum of a null-only type through", () => {
-      expect(
-        downgradeSchemaV31ToV30(asSchema({ enum: "junk", type: ["null"] }))
-      ).toEqual({ enum: "junk", nullable: true });
-    });
-
-    it("keeps a null const as the enum of a null-only type", () => {
-      expect(downgradeSchemaV31ToV30({ const: null, type: ["null"] })).toEqual({
-        enum: [null],
-        nullable: true,
-      });
-    });
-
-    it("makes the schema match nothing when a non-null const contradicts a null-only type", () => {
-      expect(downgradeSchemaV31ToV30({ const: 7, type: ["null"] })).toEqual({
-        enum: [7],
-        not: {},
-        nullable: true,
-      });
-    });
-
-    it("converts multiple non-null types into anyOf variants", () => {
-      expect(downgradeSchemaV31ToV30({ type: ["string", "integer"] })).toEqual({
-        anyOf: [{ type: "string" }, { type: "integer" }],
-      });
-    });
-
-    it("converts multiple types with null into nullable anyOf variants", () => {
-      expect(
-        downgradeSchemaV31ToV30({ type: ["string", "integer", "null"] })
-      ).toEqual({
-        anyOf: [
-          { nullable: true, type: "string" },
-          { nullable: true, type: "integer" },
-        ],
-      });
-    });
-
-    it("wraps the type union into allOf when anyOf already exists", () => {
-      expect(
-        downgradeSchemaV31ToV30({
+    it.each([
+      ["keeps a single string type", { type: "string" }, { type: "string" }],
+      [
+        "converts a type array with null into type plus nullable",
+        { type: ["string", "null"] },
+        { nullable: true, type: "string" },
+      ],
+      [
+        "converts a null-only type array into nullable plus a null enum",
+        { type: ["null"] },
+        { enum: [null], nullable: true },
+      ],
+      [
+        "converts a null-only type string into nullable plus a null enum",
+        { type: "null" },
+        { enum: [null], nullable: true },
+      ],
+      [
+        "intersects an existing enum with a null-only type",
+        { enum: ["a", null], type: ["null"] },
+        { enum: [null], nullable: true },
+      ],
+      [
+        "matches nothing when the enum of a null-only type excludes null",
+        { enum: ["a"], type: ["null"] },
+        { enum: ["a"], not: {}, nullable: true },
+      ],
+      [
+        "clones a malformed enum of a null-only type through",
+        { enum: "junk", type: ["null"] },
+        { enum: "junk", nullable: true },
+      ],
+      [
+        "keeps a null const as the enum of a null-only type",
+        { const: null, type: ["null"] },
+        { enum: [null], nullable: true },
+      ],
+      [
+        "matches nothing when a non-null const contradicts a null-only type",
+        { const: 7, type: ["null"] },
+        { enum: [7], not: {}, nullable: true },
+      ],
+      [
+        "converts multiple non-null types into anyOf variants",
+        { type: ["string", "integer"] },
+        { anyOf: [{ type: "string" }, { type: "integer" }] },
+      ],
+      [
+        "converts multiple types with null into nullable anyOf variants",
+        { type: ["string", "integer", "null"] },
+        {
+          anyOf: [
+            { nullable: true, type: "string" },
+            { nullable: true, type: "integer" },
+          ],
+        },
+      ],
+      [
+        "gives synthesized array variants an empty items",
+        { type: ["array", "string"] },
+        { anyOf: [{ items: {}, type: "array" }, { type: "string" }] },
+      ],
+      [
+        "copies existing items into the synthesized array variant",
+        { items: { type: "integer" }, type: ["array", "string", "null"] },
+        {
+          anyOf: [
+            { items: { type: "integer" }, nullable: true, type: "array" },
+            { nullable: true, type: "string" },
+          ],
+          items: { type: "integer" },
+        },
+      ],
+      [
+        "wraps the type union into allOf when anyOf already exists",
+        { anyOf: [{ minLength: 1 }], type: ["string", "integer"] },
+        {
+          allOf: [{ anyOf: [{ type: "string" }, { type: "integer" }] }],
           anyOf: [{ minLength: 1 }],
-          type: ["string", "integer"],
-        })
-      ).toEqual({
-        allOf: [{ anyOf: [{ type: "string" }, { type: "integer" }] }],
-        anyOf: [{ minLength: 1 }],
-      });
-    });
-
-    it("appends the type union to an existing allOf when anyOf also exists", () => {
-      expect(
-        downgradeSchemaV31ToV30({
+        },
+      ],
+      [
+        "appends the type union to an existing allOf when anyOf also exists",
+        {
           allOf: [{ title: "t" }],
           anyOf: [{ minLength: 1 }],
           type: ["string", "integer"],
-        })
-      ).toEqual({
-        allOf: [
-          { title: "t" },
-          { anyOf: [{ type: "string" }, { type: "integer" }] },
-        ],
-        anyOf: [{ minLength: 1 }],
-      });
-    });
-
-    it("passes junk type values through unchanged", () => {
-      expect(downgradeSchemaV31ToV30(asSchema({ type: 42 }))).toEqual({
-        type: 42,
-      });
-      expect(downgradeSchemaV31ToV30(asSchema({ type: { a: 1 } }))).toEqual({
-        type: { a: 1 },
-      });
-    });
-
-    it("deduplicates and filters non-string entries in type arrays", () => {
-      expect(
-        downgradeSchemaV31ToV30(asSchema({ type: ["string", "string"] }))
-      ).toEqual({ type: "string" });
-      expect(
-        downgradeSchemaV31ToV30(asSchema({ type: ["string", 42] }))
-      ).toEqual({ type: "string" });
-      expect(downgradeSchemaV31ToV30(asSchema({ type: [42] }))).toEqual({
-        type: [42],
-      });
-    });
-
-    it("drops an empty type array", () => {
-      expect(downgradeSchemaV31ToV30({ type: [] })).toEqual({});
+        },
+        {
+          allOf: [
+            { title: "t" },
+            { anyOf: [{ type: "string" }, { type: "integer" }] },
+          ],
+          anyOf: [{ minLength: 1 }],
+        },
+      ],
+      [
+        "drops the type union when anyOf exists and allOf is malformed",
+        {
+          allOf: "junk",
+          anyOf: [{ type: "string" }],
+          type: ["integer", "string"],
+        },
+        { allOf: "junk", anyOf: [{ type: "string" }] },
+      ],
+      [
+        "deduplicates type array entries",
+        { type: ["string", "string"] },
+        { type: "string" },
+      ],
+      [
+        "ignores non-string type array entries beside valid ones",
+        { type: ["string", 42] },
+        { type: "string" },
+      ],
+      [
+        "passes a type array of only junk entries through",
+        { type: [42] },
+        { type: [42] },
+      ],
+      ["passes a junk number type through", { type: 42 }, { type: 42 }],
+      [
+        "passes a junk object type through",
+        { type: { a: 1 } },
+        { type: { a: 1 } },
+      ],
+      ["drops an empty type array", { type: [] }, {}],
+      [
+        "adds empty items to an array type without items",
+        { type: "array" },
+        { items: {}, type: "array" },
+      ],
+      [
+        "adds empty items to a nullable array type without items",
+        { type: ["array", "null"] },
+        { items: {}, nullable: true, type: "array" },
+      ],
+    ])("%s", (_name, input, expected) => {
+      expect(convertSchema(input)).toEqual(expected);
     });
   });
 
   describe("const", () => {
-    it("converts const into a single-value enum", () => {
-      expect(downgradeSchemaV31ToV30({ const: "a" })).toEqual({ enum: ["a"] });
-    });
-
-    it("converts falsy const values", () => {
-      expect(downgradeSchemaV31ToV30({ const: 0 })).toEqual({ enum: [0] });
-      expect(downgradeSchemaV31ToV30({ const: false })).toEqual({
-        enum: [false],
-      });
-      expect(downgradeSchemaV31ToV30({ const: "" })).toEqual({ enum: [""] });
-    });
-
-    it("converts a null const and marks the schema nullable", () => {
-      expect(downgradeSchemaV31ToV30({ const: null })).toEqual({
-        enum: [null],
-        nullable: true,
-      });
-    });
-
-    it("replaces an existing enum with the const value", () => {
-      expect(downgradeSchemaV31ToV30({ const: 5, enum: [1, 2] })).toEqual({
-        enum: [5],
-      });
+    it.each([
+      [
+        "converts const into a single-value enum",
+        { const: "a" },
+        { enum: ["a"] },
+      ],
+      ["converts a zero const", { const: 0 }, { enum: [0] }],
+      ["converts a false const", { const: false }, { enum: [false] }],
+      ["converts an empty-string const", { const: "" }, { enum: [""] }],
+      [
+        "converts a null const and marks the schema nullable",
+        { const: null },
+        { enum: [null], nullable: true },
+      ],
+      [
+        "replaces an existing enum with the const value",
+        { const: 5, enum: [1, 2] },
+        { enum: [5] },
+      ],
+    ])("%s", (_name, input, expected) => {
+      expect(convertSchema(input)).toEqual(expected);
     });
   });
 
   describe("exclusive bounds", () => {
-    it("converts a numeric exclusiveMinimum into minimum plus flag", () => {
-      expect(downgradeSchemaV31ToV30({ exclusiveMinimum: 3 })).toEqual({
-        exclusiveMinimum: true,
-        minimum: 3,
-      });
-    });
-
-    it("keeps a tighter inclusive minimum and drops the exclusive one", () => {
-      expect(
-        downgradeSchemaV31ToV30({ exclusiveMinimum: 3, minimum: 5 })
-      ).toEqual({ minimum: 5 });
-    });
-
-    it("overrides a looser inclusive minimum with the exclusive bound", () => {
-      expect(
-        downgradeSchemaV31ToV30({ exclusiveMinimum: 5, minimum: 3 })
-      ).toEqual({ exclusiveMinimum: true, minimum: 5 });
-    });
-
-    it("prefers the exclusive form for equal minimum bounds", () => {
-      expect(
-        downgradeSchemaV31ToV30({ exclusiveMinimum: 3, minimum: 3 })
-      ).toEqual({ exclusiveMinimum: true, minimum: 3 });
-    });
-
-    it("converts a numeric exclusiveMaximum into maximum plus flag", () => {
-      expect(downgradeSchemaV31ToV30({ exclusiveMaximum: 10 })).toEqual({
-        exclusiveMaximum: true,
-        maximum: 10,
-      });
-    });
-
-    it("keeps a tighter inclusive maximum and drops the exclusive one", () => {
-      expect(
-        downgradeSchemaV31ToV30({ exclusiveMaximum: 10, maximum: 5 })
-      ).toEqual({ maximum: 5 });
-    });
-
-    it("overrides a looser inclusive maximum with the exclusive bound", () => {
-      expect(
-        downgradeSchemaV31ToV30({ exclusiveMaximum: 5, maximum: 10 })
-      ).toEqual({ exclusiveMaximum: true, maximum: 5 });
-    });
-
-    it("prefers the exclusive form for equal maximum bounds", () => {
-      expect(
-        downgradeSchemaV31ToV30({ exclusiveMaximum: 5, maximum: 5 })
-      ).toEqual({ exclusiveMaximum: true, maximum: 5 });
-    });
-
-    it("passes 3.0-style boolean exclusive bounds through unchanged", () => {
-      expect(
-        downgradeSchemaV31ToV30(
-          asSchema({ exclusiveMinimum: true, minimum: 3 })
-        )
-      ).toEqual({ exclusiveMinimum: true, minimum: 3 });
-      expect(
-        downgradeSchemaV31ToV30(
-          asSchema({ exclusiveMaximum: false, maximum: 3 })
-        )
-      ).toEqual({ exclusiveMaximum: false, maximum: 3 });
+    it.each([
+      [
+        "converts a numeric exclusiveMinimum into minimum plus flag",
+        { exclusiveMinimum: 3 },
+        { exclusiveMinimum: true, minimum: 3 },
+      ],
+      [
+        "keeps a tighter inclusive minimum and drops the exclusive one",
+        { exclusiveMinimum: 3, minimum: 5 },
+        { minimum: 5 },
+      ],
+      [
+        "overrides a looser inclusive minimum with the exclusive bound",
+        { exclusiveMinimum: 5, minimum: 3 },
+        { exclusiveMinimum: true, minimum: 5 },
+      ],
+      [
+        "prefers the exclusive form for equal minimum bounds",
+        { exclusiveMinimum: 3, minimum: 3 },
+        { exclusiveMinimum: true, minimum: 3 },
+      ],
+      [
+        "converts a numeric exclusiveMaximum into maximum plus flag",
+        { exclusiveMaximum: 10 },
+        { exclusiveMaximum: true, maximum: 10 },
+      ],
+      [
+        "keeps a tighter inclusive maximum and drops the exclusive one",
+        { exclusiveMaximum: 10, maximum: 5 },
+        { maximum: 5 },
+      ],
+      [
+        "overrides a looser inclusive maximum with the exclusive bound",
+        { exclusiveMaximum: 5, maximum: 10 },
+        { exclusiveMaximum: true, maximum: 5 },
+      ],
+      [
+        "prefers the exclusive form for equal maximum bounds",
+        { exclusiveMaximum: 5, maximum: 5 },
+        { exclusiveMaximum: true, maximum: 5 },
+      ],
+      [
+        "passes a 3.0-style boolean exclusiveMinimum through",
+        { exclusiveMinimum: true, minimum: 3 },
+        { exclusiveMinimum: true, minimum: 3 },
+      ],
+      [
+        "passes a 3.0-style boolean exclusiveMaximum through",
+        { exclusiveMaximum: false, maximum: 3 },
+        { exclusiveMaximum: false, maximum: 3 },
+      ],
+    ])("%s", (_name, input, expected) => {
+      expect(convertSchema(input)).toEqual(expected);
     });
   });
 
   describe("examples", () => {
-    it("promotes the first examples entry to example", () => {
-      expect(downgradeSchemaV31ToV30({ examples: ["a", "b"] })).toEqual({
-        example: "a",
-      });
-    });
-
-    it("keeps an explicit example over the examples entries", () => {
-      expect(
-        downgradeSchemaV31ToV30({ example: "e", examples: ["a"] })
-      ).toEqual({ example: "e" });
-    });
-
-    it("drops empty examples arrays", () => {
-      expect(downgradeSchemaV31ToV30({ examples: [] })).toEqual({});
-    });
-
-    it("drops non-array examples values", () => {
-      expect(downgradeSchemaV31ToV30(asSchema({ examples: "junk" }))).toEqual(
-        {}
-      );
+    it.each([
+      [
+        "promotes the first examples entry to example",
+        { examples: ["a", "b"] },
+        { example: "a" },
+      ],
+      [
+        "keeps an explicit example over the examples entries",
+        { example: "e", examples: ["a"] },
+        { example: "e" },
+      ],
+      ["drops empty examples arrays", { examples: [] }, {}],
+      ["drops non-array examples values", { examples: "junk" }, {}],
+    ])("%s", (_name, input, expected) => {
+      expect(convertSchema(input)).toEqual(expected);
     });
   });
 
   describe("content keywords", () => {
-    it("converts contentEncoding base64 into format byte", () => {
-      expect(downgradeSchemaV31ToV30({ contentEncoding: "base64" })).toEqual({
-        format: "byte",
-      });
-    });
-
-    it("keeps an existing format over contentEncoding", () => {
-      expect(
-        downgradeSchemaV31ToV30({
-          contentEncoding: "base64",
-          format: "custom",
-        })
-      ).toEqual({ format: "custom" });
-    });
-
-    it("drops other content encodings", () => {
-      expect(downgradeSchemaV31ToV30({ contentEncoding: "gzip" })).toEqual({});
-    });
-
-    it("converts contentMediaType application/octet-stream into format binary", () => {
-      expect(
-        downgradeSchemaV31ToV30({
-          contentMediaType: "application/octet-stream",
-        })
-      ).toEqual({ format: "binary" });
-    });
-
-    it("does not emit format binary when a contentEncoding is present", () => {
-      expect(
-        downgradeSchemaV31ToV30({
+    it.each([
+      [
+        "converts contentEncoding base64 into format byte",
+        { contentEncoding: "base64" },
+        { format: "byte" },
+      ],
+      [
+        "keeps an existing format over contentEncoding",
+        { contentEncoding: "base64", format: "custom" },
+        { format: "custom" },
+      ],
+      ["drops other content encodings", { contentEncoding: "gzip" }, {}],
+      [
+        "converts contentMediaType application/octet-stream into format binary",
+        { contentMediaType: "application/octet-stream" },
+        { format: "binary" },
+      ],
+      [
+        "does not emit format binary when a contentEncoding is present",
+        {
           contentEncoding: "gzip",
           contentMediaType: "application/octet-stream",
-        })
-      ).toEqual({});
-    });
-
-    it("drops other content media types", () => {
-      expect(
-        downgradeSchemaV31ToV30({ contentMediaType: "image/png" })
-      ).toEqual({});
-    });
-
-    it("drops contentSchema", () => {
-      expect(
-        downgradeSchemaV31ToV30({ contentSchema: { type: "string" } })
-      ).toEqual({});
+        },
+        {},
+      ],
+      [
+        "drops other content media types",
+        { contentMediaType: "image/png" },
+        {},
+      ],
+      ["drops contentSchema", { contentSchema: { type: "string" } }, {}],
+    ])("%s", (_name, input, expected) => {
+      expect(convertSchema(input)).toEqual(expected);
     });
   });
 
   describe("dropped keywords", () => {
     it("removes every keyword with no 3.0 equivalent", () => {
       expect(
-        downgradeSchemaV31ToV30({
+        convertSchema({
           $anchor: "a",
           $comment: "c",
           $defs: { D: { type: "string" } },
@@ -1182,127 +1017,189 @@ describe("downgradeSchemaV31ToV30", () => {
         })
       ).toEqual({ type: "string" });
     });
-  });
 
-  describe("items and prefixItems", () => {
-    it("drops prefixItems together with its trailing items", () => {
-      expect(
-        downgradeSchemaV31ToV30({
-          items: { type: "integer" },
-          prefixItems: [{ type: "string" }],
-        })
-      ).toEqual({});
-    });
-
-    it("keeps and converts items when there are no prefixItems", () => {
-      expect(
-        downgradeSchemaV31ToV30({ items: { type: ["string", "null"] } })
-      ).toEqual({ items: { nullable: true, type: "string" } });
-    });
-
-    it("converts boolean items", () => {
-      expect(downgradeSchemaV31ToV30({ items: true })).toEqual({ items: {} });
-      expect(downgradeSchemaV31ToV30({ items: false })).toEqual({
-        items: { not: {} },
-      });
-    });
-
-    it("adds empty items when type array has none", () => {
-      expect(downgradeSchemaV31ToV30({ type: "array" })).toEqual({
-        items: {},
-        type: "array",
-      });
-      expect(downgradeSchemaV31ToV30({ type: ["array", "null"] })).toEqual({
-        items: {},
-        nullable: true,
-        type: "array",
-      });
+    it.each([
+      [
+        "drops prefixItems together with its trailing items",
+        { items: { type: "integer" }, prefixItems: [{ type: "string" }] },
+        {},
+      ],
+      [
+        "drops boolean additionalProperties together with patternProperties",
+        {
+          additionalProperties: false,
+          patternProperties: { "^x-": {} },
+          properties: { name: { type: "string" } },
+          type: "object",
+        },
+        { properties: { name: { type: "string" } }, type: "object" },
+      ],
+      [
+        "drops schema-valued additionalProperties together with patternProperties",
+        {
+          additionalProperties: { type: "integer" },
+          patternProperties: { "^x-": {} },
+          type: "object",
+        },
+        { type: "object" },
+      ],
+    ])("%s", (_name, input, expected) => {
+      expect(convertSchema(input)).toEqual(expected);
     });
   });
 
-  describe("required", () => {
-    it("drops an empty required array", () => {
-      expect(downgradeSchemaV31ToV30({ required: [] })).toEqual({});
-    });
-
-    it("keeps a non-empty required array", () => {
-      expect(downgradeSchemaV31ToV30({ required: ["a"] })).toEqual({
-        required: ["a"],
-      });
-    });
-
-    it("clones a non-array required value unchanged", () => {
-      expect(downgradeSchemaV31ToV30(asSchema({ required: "junk" }))).toEqual({
-        required: "junk",
-      });
+  describe("enum and required", () => {
+    it.each([
+      [
+        "removes an empty enum",
+        { enum: [], type: "string" },
+        { type: "string" },
+      ],
+      [
+        "keeps a non-empty enum",
+        { enum: ["a"], type: "string" },
+        { enum: ["a"], type: "string" },
+      ],
+      ["drops an empty required array", { required: [] }, {}],
+      [
+        "keeps a non-empty required array",
+        { required: ["a"] },
+        { required: ["a"] },
+      ],
+      [
+        "deduplicates required entries",
+        { required: ["a", "b", "a"], type: "object" },
+        { required: ["a", "b"], type: "object" },
+      ],
+      [
+        "clones a non-array required value unchanged",
+        { required: "junk" },
+        { required: "junk" },
+      ],
+    ])("%s", (_name, input, expected) => {
+      expect(convertSchema(input)).toEqual(expected);
     });
   });
 
-  describe("recursion", () => {
-    it("converts nested property schemas", () => {
-      expect(
-        downgradeSchemaV31ToV30({
+  describe("subschemas", () => {
+    it.each([
+      [
+        "converts nested property schemas",
+        {
           properties: { a: { type: ["string", "null"] }, b: true },
           type: "object",
-        })
-      ).toEqual({
-        properties: { a: { nullable: true, type: "string" }, b: {} },
-        type: "object",
-      });
-    });
-
-    it("keeps boolean additionalProperties and converts schema ones", () => {
-      expect(downgradeSchemaV31ToV30({ additionalProperties: true })).toEqual({
-        additionalProperties: true,
-      });
-      expect(downgradeSchemaV31ToV30({ additionalProperties: false })).toEqual({
-        additionalProperties: false,
-      });
-      expect(
-        downgradeSchemaV31ToV30({
-          additionalProperties: { type: ["string", "null"] },
-        })
-      ).toEqual({
-        additionalProperties: { nullable: true, type: "string" },
-      });
-    });
-
-    it("converts allOf, anyOf, oneOf, and not members", () => {
-      expect(
-        downgradeSchemaV31ToV30({
+        },
+        {
+          properties: { a: { nullable: true, type: "string" }, b: {} },
+          type: "object",
+        },
+      ],
+      [
+        "keeps boolean additionalProperties",
+        { additionalProperties: false },
+        { additionalProperties: false },
+      ],
+      [
+        "converts schema additionalProperties",
+        { additionalProperties: { type: ["string", "null"] } },
+        { additionalProperties: { nullable: true, type: "string" } },
+      ],
+      [
+        "converts allOf, anyOf, oneOf, and not members",
+        {
           allOf: [true],
           anyOf: [{ const: 1 }],
           not: false,
           oneOf: [{ type: ["integer", "null"] }],
-        })
-      ).toEqual({
-        allOf: [{}],
-        anyOf: [{ enum: [1] }],
-        not: { not: {} },
-        oneOf: [{ nullable: true, type: "integer" }],
-      });
-    });
-
-    it("clones a non-array allOf value unchanged", () => {
-      expect(downgradeSchemaV31ToV30(asSchema({ allOf: "junk" }))).toEqual({
-        allOf: "junk",
-      });
+        },
+        {
+          allOf: [{}],
+          anyOf: [{ enum: [1] }],
+          not: { not: {} },
+          oneOf: [{ nullable: true, type: "integer" }],
+        },
+      ],
+      [
+        "clones a non-array allOf value unchanged",
+        { allOf: "junk" },
+        { allOf: "junk" },
+      ],
+      [
+        "keeps and converts items when there are no prefixItems",
+        { items: { type: ["string", "null"] } },
+        { items: { nullable: true, type: "string" } },
+      ],
+      ["converts a true items schema", { items: true }, { items: {} }],
+      [
+        "converts a false items schema",
+        { items: false },
+        { items: { not: {} } },
+      ],
+    ])("%s", (_name, input, expected) => {
+      expect(convertSchema(input)).toEqual(expected);
     });
   });
 
-  describe("extensions", () => {
+  describe("xml nodeType carried over from 3.2", () => {
+    it.each([
+      [
+        "converts nodeType attribute to attribute: true",
+        { type: "string", xml: { name: "n", nodeType: "attribute" } },
+        { type: "string", xml: { attribute: true, name: "n" } },
+      ],
+      [
+        "converts nodeType element on an array schema to wrapped: true",
+        { items: {}, type: "array", xml: { nodeType: "element" } },
+        { items: {}, type: "array", xml: { wrapped: true } },
+      ],
+      [
+        "converts nodeType element on a nullable array schema to wrapped: true",
+        { type: ["array", "null"], xml: { nodeType: "element" } },
+        { items: {}, nullable: true, type: "array", xml: { wrapped: true } },
+      ],
+      [
+        "removes nodeType element on non-array schemas",
+        { type: "string", xml: { nodeType: "element" } },
+        { type: "string", xml: {} },
+      ],
+      [
+        "removes inexpressible nodeType values",
+        { type: "string", xml: { name: "n", nodeType: "text" } },
+        { type: "string", xml: { name: "n" } },
+      ],
+      [
+        "clones xml objects without nodeType unchanged",
+        { type: "string", xml: { attribute: true, name: "n" } },
+        { type: "string", xml: { attribute: true, name: "n" } },
+      ],
+      [
+        "clones malformed xml values unchanged",
+        { type: "string", xml: "junk" },
+        { type: "string", xml: "junk" },
+      ],
+    ])("%s", (_name, input, expected) => {
+      expect(convertSchema(input)).toEqual(expected);
+    });
+  });
+
+  describe("extensions and unknown keywords", () => {
     it("preserves x- keys and unknown keywords", () => {
-      expect(
-        downgradeSchemaV31ToV30({
-          customKeyword: "v",
-          title: "t",
-          "x-foo": { a: 1 },
-        })
-      ).toEqual({ customKeyword: "v", title: "t", "x-foo": { a: 1 } });
+      const input = { customKeyword: "v", title: "t", "x-foo": { a: 1 } };
+      expect(convertSchema(input)).toEqual(input);
+    });
+
+    it("treats keywords named like Object.prototype members as unknown keywords", () => {
+      const input = {
+        constructor: 1,
+        hasOwnProperty: 2,
+        toString: 3,
+        type: "string",
+      };
+      expect(convertSchema(input)).toEqual(input);
     });
   });
 
-  describe("input non-mutation", () => {
+  describe("robustness", () => {
     it("never mutates the input schema", () => {
       const input = asSchema({
         $ref: "#/c/s",
@@ -1316,456 +1213,26 @@ describe("downgradeSchemaV31ToV30", () => {
         type: ["object", "null"],
       });
       const before = structuredClone(input);
-
       downgradeSchemaV31ToV30(input);
-
       expect(input).toEqual(before);
     });
-  });
-});
 
-describe("graceful handling of malformed nested objects", () => {
-  it("clones malformed path items, parameters, request bodies, responses, media types, and encodings", () => {
-    const spec = asSpec({
-      info,
-      openapi: "3.1.0",
-      paths: {
-        "/a": {
-          get: { requestBody: 42, responses: { "200": "junk" } },
-          parameters: [42],
-        },
-        "/b": {
-          post: {
-            requestBody: {
-              content: {
-                "application/json": "junk",
-                "multipart/form-data": { encoding: { field: "junk" } },
-              },
-            },
-            responses: {},
-          },
-        },
-        "/junk": "junk",
-      },
+    it("converts deeply nested schemas without throwing", () => {
+      let deep = asSchema({ type: "string" });
+      for (let index = 0; index < 1000; index += 1) {
+        deep = asSchema({ items: deep, type: "array" });
+      }
+      expect(() => downgradeSchemaV31ToV30(deep)).not.toThrow();
     });
-    expect(downgradeSpecV31ToV30(spec)).toEqual({
-      info,
-      openapi: "3.0.4",
-      paths: {
-        "/a": {
-          get: { requestBody: 42, responses: { "200": "junk" } },
-          parameters: [42],
-        },
-        "/b": {
-          post: {
-            requestBody: {
-              content: {
-                "application/json": "junk",
-                "multipart/form-data": { encoding: { field: "junk" } },
-              },
-            },
-            responses: {},
-          },
-        },
-        "/junk": "junk",
-      },
+
+    it("converts a schema whose subtree cycles back to itself without throwing", () => {
+      const properties: UnknownRecord = {};
+      const node: UnknownRecord = { properties, type: "object" };
+      properties.self = node;
+      expect(convertSchema(node)).toHaveProperty(
+        ["properties", "self", "type"],
+        "object"
+      );
     });
-  });
-
-  it("converts inline callback objects, cloning x- keys and junk entries", () => {
-    const spec = asSpec({
-      components: {
-        callbacks: {
-          junkCallback: 42,
-          realCallback: {
-            "x-note": { "{$expr}": { get: {} } },
-            "{$request.body#/url}": { post: { summary: "s" } },
-          },
-        },
-        "x-extra": { keep: true },
-      },
-      info,
-      openapi: "3.1.0",
-      paths: {
-        "/a": {
-          get: {
-            callbacks: {
-              inline: {
-                expr: { get: {} },
-                "x-k": { expr: { get: {} } },
-              },
-              junk: 7,
-            },
-            responses: {},
-          },
-        },
-      },
-    });
-    expect(downgradeSpecV31ToV30(spec)).toEqual({
-      components: {
-        callbacks: {
-          junkCallback: 42,
-          realCallback: {
-            "x-note": { "{$expr}": { get: {} } },
-            "{$request.body#/url}": {
-              post: {
-                responses: { default: { description: "" } },
-                summary: "s",
-              },
-            },
-          },
-        },
-        "x-extra": { keep: true },
-      },
-      info,
-      openapi: "3.0.4",
-      paths: {
-        "/a": {
-          get: {
-            callbacks: {
-              inline: {
-                expr: { get: { responses: { default: { description: "" } } } },
-                "x-k": { expr: { get: {} } },
-              },
-              junk: 7,
-            },
-            responses: {},
-          },
-        },
-      },
-    });
-  });
-
-  it("clones a malformed components value unchanged", () => {
-    expect(
-      downgradeSpecV31ToV30(
-        asSpec({ components: "junk", info, openapi: "3.1.0", paths: {} })
-      )
-    ).toEqual({ components: "junk", info, openapi: "3.0.4", paths: {} });
-  });
-});
-
-describe("xml nodeType from chained 3.2 documents", () => {
-  it("converts nodeType attribute to attribute: true", () => {
-    expect(
-      downgradeSchemaV31ToV30(
-        asSchema({ type: "string", xml: { name: "n", nodeType: "attribute" } })
-      )
-    ).toEqual({ type: "string", xml: { attribute: true, name: "n" } });
-  });
-
-  it("converts nodeType element on an array schema to wrapped: true", () => {
-    expect(
-      downgradeSchemaV31ToV30(
-        asSchema({ items: {}, type: "array", xml: { nodeType: "element" } })
-      )
-    ).toEqual({ items: {}, type: "array", xml: { wrapped: true } });
-  });
-
-  it("converts nodeType element on a nullable array schema to wrapped: true", () => {
-    expect(
-      downgradeSchemaV31ToV30(
-        asSchema({ type: ["array", "null"], xml: { nodeType: "element" } })
-      )
-    ).toEqual({
-      items: {},
-      nullable: true,
-      type: "array",
-      xml: { wrapped: true },
-    });
-  });
-
-  it("removes nodeType element on non-array schemas", () => {
-    expect(
-      downgradeSchemaV31ToV30(
-        asSchema({ type: "string", xml: { nodeType: "element" } })
-      )
-    ).toEqual({ type: "string", xml: {} });
-  });
-
-  it("removes inexpressible nodeType values", () => {
-    expect(
-      downgradeSchemaV31ToV30(
-        asSchema({ type: "string", xml: { name: "n", nodeType: "text" } })
-      )
-    ).toEqual({ type: "string", xml: { name: "n" } });
-  });
-
-  it("clones xml objects without nodeType and malformed xml values unchanged", () => {
-    expect(
-      downgradeSchemaV31ToV30(
-        asSchema({ type: "string", xml: { attribute: true, name: "n" } })
-      )
-    ).toEqual({ type: "string", xml: { attribute: true, name: "n" } });
-    expect(
-      downgradeSchemaV31ToV30(asSchema({ type: "string", xml: "junk" }))
-    ).toEqual({ type: "string", xml: "junk" });
-  });
-});
-
-describe("malformed schema values pass through the conversion triggers", () => {
-  it("passes a non-string $ref through unchanged", () => {
-    expect(downgradeSchemaV31ToV30(asSchema({ $ref: 123 }))).toEqual({
-      $ref: 123,
-    });
-    expect(
-      downgradeSchemaV31ToV30(asSchema({ $ref: 123, type: "string" }))
-    ).toEqual({ $ref: 123, type: "string" });
-  });
-
-  it("keeps a malformed allOf when a string $ref would otherwise be wrapped", () => {
-    expect(
-      downgradeSchemaV31ToV30(
-        asSchema({ $ref: "#/components/schemas/A", allOf: "junk" })
-      )
-    ).toEqual({ $ref: "#/components/schemas/A", allOf: "junk" });
-  });
-
-  it("keeps a malformed allOf when a type union would otherwise merge into it", () => {
-    expect(
-      downgradeSchemaV31ToV30(
-        asSchema({
-          allOf: "junk",
-          anyOf: [{ type: "string" }],
-          type: ["integer", "string"],
-        })
-      )
-    ).toEqual({
-      allOf: "junk",
-      anyOf: [{ type: "string" }],
-    });
-  });
-});
-
-describe("type unions containing array", () => {
-  it("gives synthesized array variants an empty items", () => {
-    expect(
-      downgradeSchemaV31ToV30(asSchema({ type: ["array", "string"] }))
-    ).toEqual({
-      anyOf: [{ items: {}, type: "array" }, { type: "string" }],
-    });
-  });
-
-  it("copies existing items into the synthesized array variant", () => {
-    expect(
-      downgradeSchemaV31ToV30(
-        asSchema({
-          items: { type: "integer" },
-          type: ["array", "string", "null"],
-        })
-      )
-    ).toEqual({
-      anyOf: [
-        { items: { type: "integer" }, nullable: true, type: "array" },
-        { nullable: true, type: "string" },
-      ],
-      items: { type: "integer" },
-    });
-  });
-});
-
-describe("patternProperties sibling handling", () => {
-  it("drops additionalProperties together with patternProperties", () => {
-    expect(
-      downgradeSchemaV31ToV30(
-        asSchema({
-          additionalProperties: false,
-          patternProperties: { "^x-": {} },
-          properties: { name: { type: "string" } },
-          type: "object",
-        })
-      )
-    ).toEqual({
-      properties: { name: { type: "string" } },
-      type: "object",
-    });
-  });
-
-  it("drops schema-valued additionalProperties together with patternProperties", () => {
-    expect(
-      downgradeSchemaV31ToV30(
-        asSchema({
-          additionalProperties: { type: "integer" },
-          patternProperties: { "^x-": {} },
-          type: "object",
-        })
-      )
-    ).toEqual({ type: "object" });
-  });
-});
-
-describe("3.0 enum and required constraints", () => {
-  it("removes an empty enum", () => {
-    expect(
-      downgradeSchemaV31ToV30(asSchema({ enum: [], type: "string" }))
-    ).toEqual({ type: "string" });
-  });
-
-  it("deduplicates required entries", () => {
-    expect(
-      downgradeSchemaV31ToV30(
-        asSchema({ required: ["a", "b", "a"], type: "object" })
-      )
-    ).toEqual({ required: ["a", "b"], type: "object" });
-  });
-});
-
-describe("mutualTLS reference aliases", () => {
-  it("removes reference aliases of mutualTLS schemes and their requirements", () => {
-    const result = downgradeSpecV31ToV30(
-      asSpec({
-        components: {
-          securitySchemes: {
-            api: { in: "header", name: "k", type: "apiKey" },
-            clientCert: { $ref: "#/components/securitySchemes/mtlsBase" },
-            mtlsBase: { type: "mutualTLS" },
-          },
-        },
-        info,
-        openapi: "3.1.0",
-        paths: {},
-        security: [{ clientCert: [] }, { api: [] }],
-      })
-    );
-    expect(result).toEqual({
-      components: {
-        securitySchemes: { api: { in: "header", name: "k", type: "apiKey" } },
-      },
-      info,
-      openapi: "3.0.4",
-      paths: {},
-      security: [{ api: [] }],
-    });
-  });
-
-  it("survives cyclic and dangling security scheme aliases", () => {
-    const result = downgradeSpecV31ToV30(
-      asSpec({
-        components: {
-          securitySchemes: {
-            dangling: { $ref: "#/components/securitySchemes/missing" },
-            external: { $ref: "https://example.com/s.json#/schemes/a" },
-            junk: 42,
-            nested: { $ref: "#/components/securitySchemes/a/b" },
-            ping: { $ref: "#/components/securitySchemes/pong" },
-            pong: { $ref: "#/components/securitySchemes/ping" },
-          },
-        },
-        info,
-        openapi: "3.1.0",
-        paths: {},
-      })
-    );
-    expect(result.components?.securitySchemes).toEqual({
-      dangling: { $ref: "#/components/securitySchemes/missing" },
-      external: { $ref: "https://example.com/s.json#/schemes/a" },
-      junk: 42,
-      nested: { $ref: "#/components/securitySchemes/a/b" },
-      ping: { $ref: "#/components/securitySchemes/pong" },
-      pong: { $ref: "#/components/securitySchemes/ping" },
-    });
-  });
-});
-
-describe("security lists emptied by mutualTLS removal", () => {
-  it("omits an operation security list that removal emptied", () => {
-    const result = downgradeSpecV31ToV30(
-      asSpec({
-        components: { securitySchemes: { mtls: { type: "mutualTLS" } } },
-        info,
-        openapi: "3.1.0",
-        paths: {
-          "/admin": {
-            get: { responses: {}, security: [{ mtls: [] }] },
-          },
-        },
-        security: [{ mtls: [] }],
-      })
-    );
-    const operation = result.paths?.["/admin"]?.get;
-    expect(operation).toEqual({ responses: {} });
-    expect(operation).not.toHaveProperty("security");
-    expect(result).not.toHaveProperty("security");
-  });
-
-  it("keeps an explicitly empty security list", () => {
-    const result = downgradeSpecV31ToV30(
-      asSpec({
-        info,
-        openapi: "3.1.0",
-        paths: { "/a": { get: { responses: {}, security: [] } } },
-        security: [],
-      })
-    );
-    expect(result.paths?.["/a"]?.get?.security).toEqual([]);
-    expect(result.security).toEqual([]);
-  });
-});
-
-describe("deep documents", () => {
-  it("converts deeply nested schemas without throwing", () => {
-    let deep = asSchema({ type: "string" });
-    for (let index = 0; index < 1000; index += 1) {
-      deep = asSchema({ items: deep, type: "array" });
-    }
-    expect(() => downgradeSchemaV31ToV30(deep)).not.toThrow();
-  });
-});
-
-describe("cyclic input", () => {
-  it("converts a schema whose subtree cycles back to itself without throwing", () => {
-    const properties: UnknownRecord = {};
-    const node: UnknownRecord = { properties, type: "object" };
-    properties.self = node;
-    const result = downgradeSchemaV31ToV30(asSchema(node));
-    expect(result).toHaveProperty(["properties", "self", "type"], "object");
-  });
-
-  it("converts a path item that cycles through its callbacks without throwing", () => {
-    const callback: UnknownRecord = {};
-    const pathItem: UnknownRecord = {
-      get: { callbacks: { cb: callback }, responses: {} },
-    };
-    callback.expr = pathItem;
-    expect(() =>
-      downgradeSpecV31ToV30(
-        asSpec({ info, openapi: "3.1.0", paths: { "/a": pathItem } })
-      )
-    ).not.toThrow();
-  });
-});
-
-describe("path parameter required synthesis", () => {
-  it("adds required: true to path parameters that lack it", () => {
-    const result = downgradeSpecV31ToV30(
-      asSpec({
-        info,
-        openapi: "3.1.0",
-        paths: {
-          "/a/{id}": {
-            get: {
-              parameters: [
-                {
-                  content: { "text/plain": { schema: { type: "string" } } },
-                  in: "path",
-                  name: "id",
-                },
-                { in: "query", name: "q", schema: {} },
-              ],
-              responses: {},
-            },
-          },
-        },
-      })
-    );
-    expect(result.paths?.["/a/{id}"]?.get?.parameters).toEqual([
-      {
-        content: { "text/plain": { schema: { type: "string" } } },
-        in: "path",
-        name: "id",
-        required: true,
-      },
-      { in: "query", name: "q", schema: {} },
-    ]);
   });
 });
