@@ -1,0 +1,68 @@
+{
+  "name": "@oasty/downgrader",
+  "version": "0.0.0",
+  "description": "Downgrade OpenAPI specifications one minor version at a time: 3.2 to 3.1 and 3.1 to 3.0, for whole documents or individual schemas",
+  "keywords": [
+    "converter",
+    "downgrade",
+    "oas",
+    "oasty",
+    "openapi",
+    "openapi-3.0",
+    "openapi-3.1",
+    "openapi-3.2",
+    "specification",
+    "swagger",
+    "typescript"
+  ],
+  "homepage": "https://github.com/middleapi/oasty",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/middleapi/oasty.git",
+    "directory": "packages/downgrader"
+  },
+  "funding": [
+    "https://github.com/sponsors/dinwwwh",
+    "https://opencollective.com/middleapi"
+  ],
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    "./package.json": "./package.json",
+    ".": "./src/index.ts",
+    "./v3.2-to-v3.1": "./src/v3.2-to-v3.1.ts",
+    "./v3.1-to-v3.0": "./src/v3.1-to-v3.0.ts"
+  },
+  "publishConfig": {
+    "exports": {
+      "./package.json": "./package.json",
+      ".": {
+        "types": "./dist/index.d.mts",
+        "import": "./dist/index.mjs",
+        "default": "./dist/index.mjs"
+      },
+      "./v3.2-to-v3.1": {
+        "types": "./dist/v3.2-to-v3.1.d.mts",
+        "import": "./dist/v3.2-to-v3.1.mjs",
+        "default": "./dist/v3.2-to-v3.1.mjs"
+      },
+      "./v3.1-to-v3.0": {
+        "types": "./dist/v3.1-to-v3.0.d.mts",
+        "import": "./dist/v3.1-to-v3.0.mjs",
+        "default": "./dist/v3.1-to-v3.0.mjs"
+      }
+    }
+  },
+  "scripts": {
+    "build": "unbuild",
+    "prepack": "unbuild",
+    "type:check": "tsc -b"
+  },
+  "dependencies": {
+    "@oasty/types": "workspace:^"
+  }
+}
